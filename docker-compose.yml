@@ -1,0 +1,102 @@
+version: '3.8'
+
+services:
+  # PostgreSQL with pgvector extension
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: atabot_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: atabot
+      POSTGRES_USER: atabot_user
+      POSTGRES_PASSWORD: atabot_password
+      POSTGRES_MAX_CONNECTIONS: 200
+      POSTGRES_SHARED_BUFFERS: 256MB
+      POSTGRES_EFFECTIVE_CACHE_SIZE: 1GB
+      POSTGRES_MAINTENANCE_WORK_MEM: 128MB
+      POSTGRES_WORK_MEM: 4MB
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atabot_user -d atabot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - atabot_network
+
+  # ATABOT 2.0 Application
+  atabot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: atabot_app
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Override DATABASE_URL for local development
+      DATABASE_URL: postgresql://atabot_user:atabot_password@postgres:5432/atabot
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app:ro  # Mount app code for development (read-only in production)
+      - ./logs:/app/logs   # Persist logs
+    networks:
+      - atabot_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: Redis for caching (uncomment if needed)
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: atabot_redis
+  #   restart: unless-stopped
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis_data:/data
+  #   command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   networks:
+  #     - atabot_network
+
+  # Optional: pgAdmin for database management (development only)
+  # pgadmin:
+  #   image: dpage/pgadmin4:latest
+  #   container_name: atabot_pgadmin
+  #   restart: unless-stopped
+  #   environment:
+  #     PGADMIN_DEFAULT_EMAIL: admin@atabot.com
+  #     PGADMIN_DEFAULT_PASSWORD: admin
+  #     PGADMIN_CONFIG_SERVER_MODE: 'False'
+  #   ports:
+  #     - "5050:80"
+  #   depends_on:
+  #     - postgres
+  #   networks:
+  #     - atabot_network
+
+networks:
+  atabot_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  # redis_data:
+  #   driver: local

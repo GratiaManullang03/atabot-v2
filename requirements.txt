@@ -1,0 +1,30 @@
+# Core Web Framework
+fastapi==0.110.0
+uvicorn[standard]==0.27.1
+python-dotenv==1.0.1
+
+# Database - Async PostgreSQL + pgvector
+asyncpg==0.29.0
+sqlalchemy==2.0.25
+pgvector==0.2.5
+
+# AI Services (API-only, no local models!)
+voyageai==0.3.0
+httpx==0.26.0  # For API calls
+
+# Essential Utilities
+pydantic==2.11.7
+pydantic-settings==2.1.0
+redis==5.0.1  # Optional caching
+orjson==3.11.3  # Fast JSON
+python-multipart==0.0.9  # File uploads
+aiofiles==23.2.1  # Async file operations
+tenacity==8.2.3  # Retry logic
+
+# Authentication
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# Monitoring & Logging
+loguru==0.7.2
+prometheus-client==0.19.0
