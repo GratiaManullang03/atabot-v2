@@ -12,7 +12,8 @@ from typing import Dict, Any
 
 from app.core.config import settings
 from app.core.database import db_pool
-from app.api.v1 import health, schemas, sync, chat
+from app.api.v1.endpoints import health
+from app.api.v1 import schemas, sync, chat
 
 
 # Configure Loguru
