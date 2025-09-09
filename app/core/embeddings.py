@@ -3,15 +3,13 @@ VoyageAI Embedding Service
 Lightweight API-based embedding generation - NO local models!
 """
 import voyageai
-from typing import List, Optional, Dict, Any
+from typing import List, Dict, Any
 from loguru import logger
 import asyncio
-from functools import lru_cache
 from tenacity import retry, stop_after_attempt, wait_exponential
 import hashlib
 
 from .config import settings
-
 
 class EmbeddingService:
     """VoyageAI API client for generating embeddings"""
@@ -268,10 +266,8 @@ class EmbeddingService:
         
         return dot_product / (norm1 * norm2)
 
-
 # Global embedding service instance
 embedding_service = EmbeddingService()
-
 
 async def get_embedding_service() -> EmbeddingService:
     """Dependency to get embedding service"""

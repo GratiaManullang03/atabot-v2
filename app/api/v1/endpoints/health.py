@@ -6,22 +6,19 @@ from typing import Dict, Any
 from datetime import datetime
 from loguru import logger
 import psutil
-import asyncio
 
 from app.core.config import settings
 from app.core.database import db_pool
 from app.core.embeddings import embedding_service
 
-
 router = APIRouter()
-
 
 @router.get("/health")
 async def health_check() -> Dict[str, Any]:
     """
     Comprehensive health check endpoint
     """
-    start_time = datetime.utcnow()
+    start_time = datetime.now()
     health_status = {
         "status": "healthy",
         "timestamp": start_time.isoformat(),
@@ -82,11 +79,10 @@ async def health_check() -> Dict[str, Any]:
     }
     
     # Response time
-    response_time_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
+    response_time_ms = (datetime.now() - start_time).total_seconds() * 1000
     health_status["response_time_ms"] = round(response_time_ms, 2)
     
     return health_status
-
 
 @router.get("/ready")
 async def readiness_check() -> Dict[str, Any]:
@@ -99,12 +95,11 @@ async def readiness_check() -> Dict[str, Any]:
         
         return {
             "ready": True,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now().isoformat()
         }
     except Exception as e:
         logger.error(f"Readiness check failed: {e}")
         raise HTTPException(status_code=503, detail="Service not ready")
-
 
 @router.get("/live")
 async def liveness_check() -> Dict[str, Any]:
@@ -113,9 +108,8 @@ async def liveness_check() -> Dict[str, Any]:
     """
     return {
         "alive": True,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now().isoformat()
     }
-
 
 @router.get("/metrics")
 async def get_metrics() -> Dict[str, Any]:
@@ -166,10 +160,10 @@ async def get_metrics() -> Dict[str, Any]:
         query_stats = await db_pool.fetchrow(query_metrics_query)
         
         return {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now().isoformat(),
             "application": {
                 "version": settings.APP_VERSION,
-                "uptime_seconds": (datetime.utcnow() - start_time).total_seconds() if 'start_time' in globals() else 0
+                "uptime_seconds": (datetime.now() - start_time).total_seconds() if 'start_time' in globals() else 0
             },
             "database": db_metrics,
             "schemas": dict(schema_stats) if schema_stats else {},
@@ -186,9 +180,8 @@ async def get_metrics() -> Dict[str, Any]:
         logger.error(f"Failed to get metrics: {e}")
         return {
             "error": str(e),
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now().isoformat()
         }
 
-
 # Track application start time
-start_time = datetime.utcnow()
+start_time = datetime.now()

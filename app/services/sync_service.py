@@ -2,8 +2,8 @@
 Data Synchronization Service
 Handles bulk and real-time sync of data to vector store
 """
-from typing import Dict, List, Any, Optional, Tuple
-from datetime import datetime, date, timedelta
+from typing import Dict, List, Any, Optional
+from datetime import datetime, date
 import asyncio
 import asyncpg
 import hashlib
@@ -15,7 +15,6 @@ import uuid
 from app.core.database import db_pool
 from app.core.embeddings import embedding_service
 from app.core.config import settings
-
 
 class SyncService:
     """
@@ -44,7 +43,7 @@ class SyncService:
             Sync result with statistics
         """
         job_id = str(uuid.uuid4())
-        start_time = datetime.utcnow()
+        start_time = datetime.now()
         
         # Register job
         self.active_jobs[job_id] = {
@@ -73,7 +72,7 @@ class SyncService:
             
             # Update job status
             self.active_jobs[job_id]["status"] = "completed"
-            self.active_jobs[job_id]["completed_at"] = datetime.utcnow().isoformat()
+            self.active_jobs[job_id]["completed_at"] = datetime.now().isoformat()
             self.active_jobs[job_id]["result"] = result
             
             return result
@@ -93,7 +92,7 @@ class SyncService:
         """
         Perform full table synchronization
         """
-        start_time = datetime.utcnow()
+        start_time = datetime.now()
         
         # Clear existing embeddings for this table
         await self._clear_table_embeddings(schema, table)
@@ -143,7 +142,7 @@ class SyncService:
         # Update sync status
         await self._update_sync_status(schema, table, "completed", rows_processed)
         
-        duration = (datetime.utcnow() - start_time).total_seconds()
+        duration = (datetime.now() - start_time).total_seconds()
         
         return {
             "mode": "full",
@@ -162,7 +161,7 @@ class SyncService:
         """
         Perform incremental synchronization (only changed data)
         """
-        start_time = datetime.utcnow()
+        start_time = datetime.now()
         
         # Get last sync timestamp
         last_sync = await self._get_last_sync_time(schema, table)
@@ -223,7 +222,7 @@ class SyncService:
         # Update sync status
         await self._update_sync_status(schema, table, "completed", total_rows)
         
-        duration = (datetime.utcnow() - start_time).total_seconds()
+        duration = (datetime.now() - start_time).total_seconds()
         
         return {
             "mode": "incremental",
@@ -593,7 +592,6 @@ class SyncService:
             {"job_id": job_id, **job_data}
             for job_id, job_data in self.active_jobs.items()
         ]
-
 
 # Global sync service instance
 sync_service = SyncService()

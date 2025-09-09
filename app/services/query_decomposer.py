@@ -2,14 +2,13 @@
 Query Decomposer Service - Breaks complex queries into simpler sub-queries
 Uses AI to intelligently decompose multi-part questions
 """
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any
 from loguru import logger
 import re
 import json
 
 from app.core.llm import llm_client
 from app.core.config import settings
-
 
 class QueryDecomposer:
     """
@@ -397,7 +396,6 @@ If the question asked for multiple items, list them clearly."""
             intent['requires_joining'] = True
         
         return intent
-
 
 # Global query decomposer instance
 query_decomposer = QueryDecomposer()

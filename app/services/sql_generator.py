@@ -10,7 +10,6 @@ import json
 from app.core.llm import llm_client
 from app.core.database import db_pool
 
-
 class SQLGenerator:
     """
     Service for generating SQL queries from natural language
@@ -660,7 +659,6 @@ Return ONLY the SQL query without explanation."""
                 "rows": [],
                 "row_count": 0
             }
-
 
 # Global SQL generator instance
 sql_generator = SQLGenerator()

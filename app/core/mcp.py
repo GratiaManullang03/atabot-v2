@@ -2,17 +2,15 @@
 Model Context Protocol (MCP) Implementation for ATABOT 2.0
 Provides standardized interfaces for AI model interactions
 """
-from typing import Dict, List, Any, Optional, Callable, Union
+from typing import Dict, List, Any, Optional, Callable
 from enum import Enum
 from dataclasses import dataclass, field
 from datetime import datetime
 import json
-import hashlib
 from loguru import logger
 from abc import ABC, abstractmethod
 
 from app.core.config import settings
-
 
 class MCPToolType(Enum):
     """Types of MCP tools available"""
@@ -22,7 +20,6 @@ class MCPToolType(Enum):
     SYNC = "sync"            # Data synchronization
     TRANSFORM = "transform"   # Data transformation
 
-
 class MCPResourceType(Enum):
     """Types of MCP resources"""
     DATABASE = "database"
@@ -30,7 +27,6 @@ class MCPResourceType(Enum):
     SCHEMA = "schema"
     CACHE = "cache"
     DOCUMENT = "document"
-
 
 @dataclass
 class MCPContext:
@@ -40,7 +36,7 @@ class MCPContext:
     active_schema: Optional[str] = None
     conversation_history: List[Dict[str, Any]] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=datetime.now)
     
     def add_message(self, role: str, content: str, metadata: Optional[Dict] = None):
         """Add a message to conversation history"""
@@ -48,7 +44,7 @@ class MCPContext:
             "role": role,
             "content": content,
             "metadata": metadata or {},
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now().isoformat()
         })
     
     def get_recent_context(self, n: int = 5) -> List[Dict[str, Any]]:
@@ -65,7 +61,6 @@ class MCPContext:
             "metadata": self.metadata,
             "created_at": self.created_at.isoformat()
         }
-
 
 @dataclass
 class MCPTool:
@@ -110,7 +105,6 @@ class MCPTool:
             "requires_auth": self.requires_auth
         }
 
-
 @dataclass
 class MCPResource:
     """Represents an MCP resource"""
@@ -131,7 +125,6 @@ class MCPResource:
             "uri": self.uri,
             "metadata": self.metadata
         }
-
 
 class MCPProvider(ABC):
     """Abstract base class for MCP providers"""
@@ -155,7 +148,6 @@ class MCPProvider(ABC):
     async def get_resource(self, resource_id: str) -> MCPResource:
         """Get a specific resource"""
         pass
-
 
 class ATABOTMCPProvider(MCPProvider):
     """ATABOT-specific MCP provider implementation"""
@@ -403,10 +395,8 @@ class ATABOTMCPProvider(MCPProvider):
         
         return sub_queries
 
-
 # Global MCP provider instance
 mcp_provider = ATABOTMCPProvider()
-
 
 class MCPOrchestrator:
     """Orchestrates MCP operations for complex workflows"""
@@ -477,7 +467,7 @@ class MCPOrchestrator:
         elif action == "set_schema":
             schema = request.get("schema")
             context.active_schema = schema
-            context.metadata["schema_set_at"] = datetime.utcnow().isoformat()
+            context.metadata["schema_set_at"] = datetime.now().isoformat()
             return {
                 "success": True,
                 "message": f"Active schema set to: {schema}",
@@ -523,7 +513,6 @@ class MCPOrchestrator:
                 break
         
         return results
-
 
 # Global MCP orchestrator
 mcp_orchestrator = MCPOrchestrator(mcp_provider)

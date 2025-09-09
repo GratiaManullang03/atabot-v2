@@ -10,7 +10,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 
-
 class PoeClient:
     """
     Client for Poe API (ChatGPT, Claude, etc.)
@@ -308,10 +307,8 @@ Output format:
         """
         await self.client.aclose()
 
-
 # Global LLM client instance
 llm_client = PoeClient()
-
 
 async def get_llm_client() -> PoeClient:
     """

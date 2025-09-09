@@ -21,7 +21,6 @@ except ImportError:
 # JWT Bearer token (skeleton - sesuaikan dengan kebutuhan client)
 security = HTTPBearer(auto_error=False)
 
-
 def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ) -> Optional[dict]:
@@ -50,7 +49,6 @@ def get_current_user(
         "username": payload.get("username"),
         # tambahkan field lain sesuai kebutuhan
     }
-
 
 def require_auth(
     current_user: Optional[dict] = Depends(get_current_user)

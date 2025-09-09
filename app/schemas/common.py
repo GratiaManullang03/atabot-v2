@@ -3,15 +3,12 @@ from pydantic import BaseModel
 
 T = TypeVar("T")
 
-
 class ResponseBase(BaseModel):
     success: bool
     message: str
     
-
 class DataResponse(ResponseBase, Generic[T]):
     data: Optional[T] = None
-
 
 class PaginationResponse(ResponseBase, Generic[T]):
     data: List[T]

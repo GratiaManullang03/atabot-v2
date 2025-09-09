@@ -8,10 +8,8 @@ from typing import Optional, AsyncGenerator, Dict, Any, List
 from contextlib import asynccontextmanager
 from loguru import logger
 import json
-from datetime import datetime
 
 from .config import settings
-
 
 class DatabasePool:
     """Manages async PostgreSQL connection pool"""
@@ -247,17 +245,14 @@ class DatabasePool:
         
         logger.info(f"Created real-time sync trigger for {schema}.{table}")
 
-
 # Global database pool instance
 db_pool = DatabasePool()
-
 
 async def get_db() -> DatabasePool:
     """Dependency to get database pool"""
     if not db_pool.pool:
         await db_pool.init_pool()
     return db_pool
-
 
 # Context manager for database lifecycle
 @asynccontextmanager

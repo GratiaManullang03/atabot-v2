@@ -2,8 +2,7 @@
 Search Service - Hybrid SQL + Vector Search
 Combines traditional SQL filtering with semantic vector similarity
 """
-from typing import Dict, List, Any, Optional, Tuple
-from datetime import datetime
+from typing import Dict, List, Any, Optional
 from loguru import logger
 import json
 import asyncpg
@@ -11,7 +10,6 @@ import asyncpg
 from app.core.database import db_pool
 from app.core.embeddings import embedding_service
 from app.core.config import settings
-
 
 class SearchService:
     """
@@ -454,7 +452,6 @@ class SearchService:
                 suggestions.append(snippet.split(':')[1].strip()[:50])
         
         return suggestions[:limit]
-
 
 # Global search service instance
 search_service = SearchService()

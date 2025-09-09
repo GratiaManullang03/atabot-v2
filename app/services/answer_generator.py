@@ -11,7 +11,6 @@ import re
 
 from app.core.llm import llm_client
 
-
 class AnswerGenerator:
     """
     Service for generating natural language answers from query results
@@ -603,7 +602,6 @@ Requirements:
                 "type": "table",
                 "reason": "Complex data structure"
             }
-
 
 # Global answer generator instance
 answer_generator = AnswerGenerator()

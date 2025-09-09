@@ -2,7 +2,7 @@
 Universal Schema Analyzer
 Learns from ANY database structure without hardcoded assumptions
 """
-from typing import Dict, List, Any, Optional, Set, Tuple
+from typing import Dict, List, Any
 from collections import defaultdict, Counter
 import re
 from datetime import datetime
@@ -10,7 +10,6 @@ from loguru import logger
 import json
 
 from app.core.database import db_pool
-
 
 class SchemaAnalyzer:
     """
@@ -91,7 +90,7 @@ class SchemaAnalyzer:
             'relationships': relationships,
             'terminology': terminology,
             'entity_graph': self._create_entity_graph(table_analyses, relationships),
-            'discovered_at': datetime.utcnow().isoformat()
+            'discovered_at': datetime.now().isoformat()
         }
         
         # Store learned patterns
@@ -527,7 +526,6 @@ class SchemaAnalyzer:
             
         except Exception as e:
             logger.error(f"Failed to store learned patterns: {e}")
-
 
 # Global schema analyzer instance
 schema_analyzer = SchemaAnalyzer()

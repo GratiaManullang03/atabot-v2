@@ -1,10 +1,9 @@
 """
 Pydantic models for schema-related API requests and responses
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-
 
 class SchemaInfo(BaseModel):
     """Basic schema information"""
@@ -17,13 +16,11 @@ class SchemaInfo(BaseModel):
     business_domain: Optional[str] = None
     last_synced_at: Optional[datetime] = None
 
-
 class SchemaListResponse(BaseModel):
     """Response for schema list endpoint"""
     success: bool
     schemas: List[SchemaInfo]
     total: int
-
 
 class TableColumn(BaseModel):
     """Table column information"""
@@ -32,7 +29,6 @@ class TableColumn(BaseModel):
     nullable: bool
     is_primary_key: bool = False
     is_foreign_key: bool = False
-
 
 class TableInfo(BaseModel):
     """Table information"""
@@ -43,7 +39,6 @@ class TableInfo(BaseModel):
     last_synced: Optional[datetime] = None
     synced_rows: int = 0
     columns: List[Dict[str, Any]]
-
 
 class SchemaAnalysis(BaseModel):
     """Schema analysis result"""

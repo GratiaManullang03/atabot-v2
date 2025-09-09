@@ -3,7 +3,7 @@ Data Synchronization API Endpoints
 File: app/api/v1/endpoints/sync.py
 """
 from fastapi import APIRouter, HTTPException, BackgroundTasks
-from typing import Dict, Any, Optional
+from typing import Optional
 from datetime import datetime
 from loguru import logger
 import uuid
@@ -15,9 +15,7 @@ from app.schemas.sync_models import (
     SyncResponse,
     SyncStatusResponse
 )
-
 router = APIRouter()
-
 
 @router.post("/table", response_model=SyncResponse)
 async def sync_single_table(
@@ -50,7 +48,6 @@ async def sync_single_table(
         logger.error(f"Failed to start sync: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/batch", response_model=SyncResponse)
 async def sync_batch_tables(
     request: BatchSyncRequest,
@@ -81,7 +78,6 @@ async def sync_batch_tables(
         logger.error(f"Failed to start batch sync: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/initial")
 async def initial_sync(
     schema_name: str,
@@ -110,7 +106,6 @@ async def initial_sync(
     except Exception as e:
         logger.error(f"Failed to start initial sync: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.post("/realtime/enable")
 async def enable_realtime_sync(
@@ -156,7 +151,6 @@ async def disable_realtime_sync(
     except Exception as e:
         logger.error(f"Failed to disable realtime sync: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.get("/status")
 async def get_sync_status(
@@ -212,7 +206,6 @@ async def get_sync_status(
         logger.error(f"Failed to get sync status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/jobs")
 async def get_active_jobs():
     """
@@ -229,7 +222,6 @@ async def get_active_jobs():
     except Exception as e:
         logger.error(f"Failed to get active jobs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.get("/jobs/{job_id}", response_model=SyncStatusResponse)
 async def get_job_status(job_id: str):
@@ -257,7 +249,6 @@ async def get_job_status(job_id: str):
     except Exception as e:
         logger.error(f"Failed to get job status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.delete("/cache")
 async def clear_sync_cache(
@@ -303,7 +294,6 @@ async def clear_sync_cache(
         logger.error(f"Failed to clear cache: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/statistics")
 async def get_sync_statistics():
     """
@@ -342,7 +332,7 @@ async def get_sync_statistics():
         return {
             "sync_stats": dict(stats) if stats else {},
             "embedding_stats": dict(embedding_stats) if embedding_stats else {},
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now().isoformat()
         }
         
     except Exception as e:

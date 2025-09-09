@@ -1,24 +1,19 @@
 """
 Schema Management API Endpoints
 """
-from fastapi import APIRouter, HTTPException, Depends
-from typing import Dict, Any, List, Optional
+from fastapi import APIRouter, HTTPException
+from typing import Dict, Any, Optional
 from datetime import datetime
 from loguru import logger
 
 from app.core.database import db_pool
 from app.core.mcp import mcp_orchestrator
-from app.services.schema_analyzer import schema_analyzer
 from app.schemas.schema_models import (
     SchemaInfo,
-    SchemaAnalysis,
-    TableInfo,
     SchemaListResponse
 )
 
-
 router = APIRouter()
-
 
 @router.get("/", response_model=SchemaListResponse)
 async def list_schemas():
@@ -73,7 +68,6 @@ async def list_schemas():
         logger.error(f"Failed to list schemas: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/{schema_name}/analyze")
 async def analyze_schema(schema_name: str) -> Dict[str, Any]:
     """
@@ -89,7 +83,7 @@ async def analyze_schema(schema_name: str) -> Dict[str, Any]:
                 "tool": "analyze_schema",
                 "params": {"schema": schema_name}
             },
-            session_id=f"analyze_{schema_name}_{datetime.utcnow().timestamp()}"
+            session_id=f"analyze_{schema_name}_{datetime.now().timestamp()}"
         )
         
         if not result.get("success"):
@@ -106,7 +100,6 @@ async def analyze_schema(schema_name: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Failed to analyze schema {schema_name}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.post("/{schema_name}/activate")
 async def activate_schema(schema_name: str, session_id: Optional[str] = None):
@@ -152,7 +145,6 @@ async def activate_schema(schema_name: str, session_id: Optional[str] = None):
     except Exception as e:
         logger.error(f"Failed to activate schema {schema_name}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.get("/{schema_name}/tables")
 async def get_schema_tables(schema_name: str):
@@ -213,7 +205,6 @@ async def get_schema_tables(schema_name: str):
     except Exception as e:
         logger.error(f"Failed to get tables for schema {schema_name}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.get("/{schema_name}/statistics")
 async def get_schema_statistics(schema_name: str):
@@ -283,7 +274,6 @@ async def get_schema_statistics(schema_name: str):
         logger.error(f"Failed to get statistics for schema {schema_name}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.delete("/{schema_name}")
 async def deactivate_schema(schema_name: str):
     """
@@ -306,7 +296,6 @@ async def deactivate_schema(schema_name: str):
     except Exception as e:
         logger.error(f"Failed to deactivate schema {schema_name}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.get("/{schema_name}/relationships")
 async def get_schema_relationships(schema_name: str):
