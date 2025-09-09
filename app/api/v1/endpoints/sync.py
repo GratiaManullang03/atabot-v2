@@ -1,9 +1,4 @@
 """
 Data Synchronization API Endpoints
+File: app/api/v1/endpoints/sync.py
 """
-from fastapi import APIRouter, HTTPException, BackgroundTasks
-from typing import Dict, Any, List, Optional
-from datetime import datetime
-import uuid
-import asyncpg
-from loguru import logger
