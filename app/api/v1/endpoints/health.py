@@ -34,11 +34,29 @@ async def health_check() -> Dict[str, Any]:
         # Check pgvector extension
         vector_enabled = await db_pool.check_vector_extension()
         
+        # Get pool size safely
+        pool_size = 0
+        pool_free = 0
+        pool_max = settings.DATABASE_POOL_SIZE
+        
+        if db_pool.pool:
+            # Use public methods instead of private attributes
+            try:
+                # asyncpg pool doesn't expose _size directly, we can get it from the pool
+                pool_size = db_pool.pool.get_size() if hasattr(db_pool.pool, 'get_size') else 'unknown'
+                pool_free = db_pool.pool.get_idle_size() if hasattr(db_pool.pool, 'get_idle_size') else 'unknown'
+            except:
+                # If methods don't exist, just report configured values
+                pool_size = pool_max
+                pool_free = 'unknown'
+        
         health_status["checks"]["database"] = {
             "status": "healthy",
             "connected": True,
             "pgvector_enabled": vector_enabled,
-            "pool_size": db_pool.pool._size if db_pool.pool else 0
+            "pool_size": pool_size,
+            "pool_free": pool_free,
+            "pool_max": pool_max
         }
     except Exception as e:
         health_status["checks"]["database"] = {
@@ -117,47 +135,78 @@ async def get_metrics() -> Dict[str, Any]:
     Get application metrics for monitoring
     """
     try:
-        # Get database metrics
+        # Get database metrics safely
         db_metrics = {}
         if db_pool.pool:
+            try:
+                # Try to get pool metrics if available
+                db_metrics = {
+                    "pool_configured_size": settings.DATABASE_POOL_SIZE,
+                    "pool_configured_max_overflow": settings.DATABASE_MAX_OVERFLOW,
+                    "pool_status": "active"
+                }
+                
+                # Try to get actual pool stats if methods exist
+                if hasattr(db_pool.pool, 'get_size'):
+                    db_metrics["pool_current_size"] = db_pool.pool.get_size()
+                if hasattr(db_pool.pool, 'get_idle_size'):
+                    db_metrics["pool_idle"] = db_pool.pool.get_idle_size()
+                    
+            except Exception as e:
+                logger.debug(f"Could not get detailed pool metrics: {e}")
+                db_metrics = {
+                    "pool_configured_size": settings.DATABASE_POOL_SIZE,
+                    "pool_status": "active"
+                }
+        else:
             db_metrics = {
-                "pool_size": db_pool.pool._size,
-                "pool_free": db_pool.pool._free_size,
-                "pool_max": settings.DATABASE_POOL_SIZE
+                "pool_status": "not_initialized"
             }
         
         # Get schema metrics
-        schemas_query = """
-            SELECT 
-                COUNT(*) as total_schemas,
-                SUM(total_tables) as total_tables,
-                SUM(total_rows) as total_rows
-            FROM atabot.managed_schemas
-            WHERE is_active = true
-        """
-        schema_stats = await db_pool.fetchrow(schemas_query)
+        try:
+            schemas_query = """
+                SELECT 
+                    COUNT(*) as total_schemas,
+                    COALESCE(SUM(total_tables), 0) as total_tables,
+                    COALESCE(SUM(total_rows), 0) as total_rows
+                FROM atabot.managed_schemas
+                WHERE is_active = true
+            """
+            schema_stats = await db_pool.fetchrow(schemas_query)
+        except Exception as e:
+            logger.debug(f"Could not get schema stats: {e}")
+            schema_stats = None
         
         # Get embedding metrics
-        embeddings_query = """
-            SELECT 
-                COUNT(*) as total_embeddings,
-                COUNT(DISTINCT schema_name) as unique_schemas,
-                COUNT(DISTINCT table_name) as unique_tables
-            FROM atabot.embeddings
-        """
-        embedding_stats = await db_pool.fetchrow(embeddings_query)
+        try:
+            embeddings_query = """
+                SELECT 
+                    COUNT(*) as total_embeddings,
+                    COUNT(DISTINCT schema_name) as unique_schemas,
+                    COUNT(DISTINCT table_name) as unique_tables
+                FROM atabot.embeddings
+            """
+            embedding_stats = await db_pool.fetchrow(embeddings_query)
+        except Exception as e:
+            logger.debug(f"Could not get embedding stats: {e}")
+            embedding_stats = None
         
         # Get query metrics
-        query_metrics_query = """
-            SELECT 
-                COUNT(*) as total_queries,
-                AVG(response_time_ms) as avg_response_time,
-                MAX(response_time_ms) as max_response_time,
-                MIN(response_time_ms) as min_response_time
-            FROM atabot.query_logs
-            WHERE created_at > NOW() - INTERVAL '1 hour'
-        """
-        query_stats = await db_pool.fetchrow(query_metrics_query)
+        try:
+            query_metrics_query = """
+                SELECT 
+                    COUNT(*) as total_queries,
+                    AVG(response_time_ms) as avg_response_time,
+                    MAX(response_time_ms) as max_response_time,
+                    MIN(response_time_ms) as min_response_time
+                FROM atabot.query_logs
+                WHERE created_at > NOW() - INTERVAL '1 hour'
+            """
+            query_stats = await db_pool.fetchrow(query_metrics_query)
+        except Exception as e:
+            logger.debug(f"Could not get query stats: {e}")
+            query_stats = None
         
         return {
             "timestamp": datetime.now().isoformat(),
@@ -166,9 +215,9 @@ async def get_metrics() -> Dict[str, Any]:
                 "uptime_seconds": (datetime.now() - start_time).total_seconds() if 'start_time' in globals() else 0
             },
             "database": db_metrics,
-            "schemas": dict(schema_stats) if schema_stats else {},
-            "embeddings": dict(embedding_stats) if embedding_stats else {},
-            "queries": dict(query_stats) if query_stats else {},
+            "schemas": dict(schema_stats) if schema_stats else {"message": "No schema data available"},
+            "embeddings": dict(embedding_stats) if embedding_stats else {"message": "No embedding data available"},
+            "queries": dict(query_stats) if query_stats else {"message": "No query data available"},
             "system": {
                 "cpu_percent": psutil.cpu_percent(interval=0.1),
                 "memory_percent": psutil.virtual_memory().percent,

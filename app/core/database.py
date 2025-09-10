@@ -41,7 +41,7 @@ class DatabasePool:
             # Register custom type handlers
             await self._register_type_handlers()
             
-            logger.info(f"Database pool initialized with {settings.DATABASE_POOL_SIZE} connections")
+            logger.info(f"Database pool initialized with max {settings.DATABASE_POOL_SIZE} connections")
             
         except Exception as e:
             logger.error(f"Failed to initialize database pool: {e}")
@@ -53,6 +53,31 @@ class DatabasePool:
             await self.pool.close()
             self.pool = None
             logger.info("Database pool closed")
+    
+    def get_pool_stats(self) -> Dict[str, Any]:
+        """Get pool statistics safely"""
+        if not self.pool:
+            return {"status": "not_initialized"}
+        
+        stats = {
+            "status": "active",
+            "configured_min_size": 10,
+            "configured_max_size": settings.DATABASE_POOL_SIZE
+        }
+        
+        # Try to get actual stats from pool
+        try:
+            # asyncpg pool exposes these methods in newer versions
+            if hasattr(self.pool, 'get_size'):
+                stats["current_size"] = self.pool.get_size()
+            if hasattr(self.pool, 'get_idle_size'):
+                stats["idle_connections"] = self.pool.get_idle_size()
+            if hasattr(self.pool, 'get_max_size'):
+                stats["max_size"] = self.pool.get_max_size()
+        except Exception as e:
+            logger.debug(f"Could not get detailed pool stats: {e}")
+        
+        return stats
     
     @asynccontextmanager
     async def acquire(self) -> AsyncGenerator[Connection, None]:
@@ -110,6 +135,9 @@ class DatabasePool:
     
     async def listen_to_channel(self, channel: str, callback: callable) -> None:
         """Listen to PostgreSQL NOTIFY channel"""
+        if not self.pool:
+            await self.init_pool()
+            
         conn = await self.pool.acquire()
         self.listeners[channel] = conn
         
@@ -158,26 +186,56 @@ class DatabasePool:
     
     async def get_tables(self, schema: str) -> List[Dict[str, Any]]:
         """Get all tables in a schema with row counts"""
+        # Query yang lebih robust untuk mendapatkan table info dan row counts
         query = """
+            WITH table_stats AS (
+                SELECT 
+                    schemaname,
+                    tablename,
+                    n_live_tup as row_count
+                FROM pg_stat_user_tables
+                WHERE schemaname = $1
+            )
             SELECT 
                 t.table_name,
                 t.table_type,
-                obj_description(c.oid) as table_comment,
+                pg_catalog.obj_description(c.oid, 'pg_class') as table_comment,
                 COALESCE(
-                    (SELECT n_live_tup FROM pg_stat_user_tables 
-                     WHERE schemaname = $1 AND tablename = t.table_name),
+                    ts.row_count,
+                    c.reltuples::BIGINT,
                     0
                 ) as estimated_row_count
             FROM information_schema.tables t
-            LEFT JOIN pg_class c ON c.relname = t.table_name
-            LEFT JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = t.table_schema
+            LEFT JOIN pg_catalog.pg_class c 
+                ON c.relname = t.table_name
+                AND c.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1)
+            LEFT JOIN table_stats ts 
+                ON ts.tablename = t.table_name
+                AND ts.schemaname = t.table_schema
             WHERE t.table_schema = $1
-            AND t.table_type = 'BASE TABLE'
+                AND t.table_type = 'BASE TABLE'
             ORDER BY t.table_name
         """
         
-        rows = await self.fetch(query, schema)
-        return [dict(row) for row in rows]
+        try:
+            rows = await self.fetch(query, schema)
+            return [dict(row) for row in rows]
+        except Exception as e:
+            # Fallback to simpler query if the above fails
+            logger.warning(f"Complex query failed, using fallback: {e}")
+            fallback_query = """
+                SELECT 
+                    table_name,
+                    'BASE TABLE' as table_type,
+                    NULL as table_comment,
+                    0 as estimated_row_count
+                FROM information_schema.tables
+                WHERE table_schema = $1
+                    AND table_type = 'BASE TABLE'
+                ORDER BY table_name
+            """
+            rows = await self.fetch(fallback_query, schema)
+            return [dict(row) for row in rows]
     
     async def get_foreign_keys(self, schema: str) -> List[Dict[str, Any]]:
         """Get all foreign key relationships in a schema"""

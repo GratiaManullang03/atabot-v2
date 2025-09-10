@@ -3,7 +3,6 @@
 
 -- Enable required extensions
 CREATE EXTENSION IF NOT EXISTS vector;
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS pg_trgm;  -- For text search
 
 -- Create ATABOT schema
@@ -17,7 +16,7 @@ SET search_path TO atabot, public;
 -- Tracks all schemas being managed by ATABOT
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS atabot.managed_schemas (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- Changed from uuid_generate_v4()
     schema_name TEXT UNIQUE NOT NULL,
     display_name TEXT NOT NULL,
     description TEXT,
@@ -69,7 +68,7 @@ USING gin(to_tsvector('english', content));
 -- Tracks synchronization status for each table
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS atabot.sync_status (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- Changed
     schema_name TEXT NOT NULL,
     table_name TEXT NOT NULL,
     sync_status TEXT DEFAULT 'pending', -- pending, running, completed, failed
@@ -91,7 +90,7 @@ CREATE INDEX idx_sync_status_status ON atabot.sync_status(sync_status);
 -- Logs all queries for learning and analytics
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS atabot.query_logs (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- Changed
     session_id TEXT,
     user_id TEXT,
     query TEXT NOT NULL,
@@ -115,7 +114,7 @@ CREATE INDEX idx_query_logs_schema ON atabot.query_logs(schema_name);
 -- Stores patterns learned from data and queries
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS atabot.learned_patterns (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- Changed
     pattern_type TEXT NOT NULL,  -- entity, relationship, query, terminology
     schema_name TEXT,
     table_name TEXT,

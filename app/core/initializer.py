@@ -56,13 +56,12 @@ class AppInitializer:
         """Execute embedded initialization SQL"""
         # Basic schema creation
         await db_pool.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        await db_pool.execute("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"")
         await db_pool.execute("CREATE SCHEMA IF NOT EXISTS atabot")
         
-        # Create tables (simplified version)
+        # Create tables (simplified version with gen_random_uuid())
         await db_pool.execute("""
             CREATE TABLE IF NOT EXISTS atabot.managed_schemas (
-                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 schema_name TEXT UNIQUE NOT NULL,
                 display_name TEXT NOT NULL,
                 is_active BOOLEAN DEFAULT false,
@@ -90,7 +89,7 @@ class AppInitializer:
         
         await db_pool.execute("""
             CREATE TABLE IF NOT EXISTS atabot.sync_status (
-                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 schema_name TEXT NOT NULL,
                 table_name TEXT NOT NULL,
                 sync_status TEXT DEFAULT 'pending',
@@ -104,7 +103,7 @@ class AppInitializer:
         
         await db_pool.execute("""
             CREATE TABLE IF NOT EXISTS atabot.query_logs (
-                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 session_id TEXT,
                 query TEXT NOT NULL,
                 response_time_ms FLOAT,
