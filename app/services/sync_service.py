@@ -29,6 +29,89 @@ class SyncService:
     def __init__(self):
         self.active_jobs: Dict[str, Dict[str, Any]] = {}
         self.sync_lock = asyncio.Lock()
+    
+    async def _ensure_schema_analyzed(self, schema: str) -> None:
+        """
+        Ensure schema has been analyzed before syncing
+        """
+        query = """
+            SELECT COUNT(*) FROM atabot.managed_schemas
+            WHERE schema_name = $1
+        """
+        count = await db_pool.fetchval(query, schema)
+        
+        if count == 0:
+            logger.info(f"Schema {schema} not analyzed yet, performing quick analysis...")
+            
+            # Perform basic schema registration without full analysis
+            # This prevents the string index error by ensuring proper structure
+            from app.services.schema_analyzer import schema_analyzer
+            
+            try:
+                # Perform full analysis
+                await schema_analyzer.analyze_schema(schema)
+            except Exception as e:
+                logger.warning(f"Full schema analysis failed: {e}, using basic registration")
+                
+                # Fallback: Just register the schema with basic info
+                tables = await db_pool.get_tables(schema)
+                
+                # Create basic metadata structure
+                metadata = {}
+                for table in tables:
+                    table_name = table['table_name']
+                    table_info = await db_pool.get_table_info(schema, table_name)
+                    
+                    # Create basic table metadata
+                    metadata[table_name] = {
+                        'entity_type': 'record',
+                        'row_count': table.get('estimated_row_count', 0),
+                        'columns': {},
+                        'display_fields': [],
+                        'searchable_fields': [],
+                        'primary_key': None,
+                        'foreign_keys': []
+                    }
+                    
+                    # Extract column info
+                    for col in table_info[:10]:  # Limit to first 10 columns for basic analysis
+                        col_name = col['column_name']
+                        metadata[table_name]['columns'][col_name] = {
+                            'type': col['data_type'],
+                            'nullable': col['is_nullable']
+                        }
+                        
+                        # Identify primary key
+                        if 'id' in col_name.lower() or col_name.lower() == 'uuid':
+                            metadata[table_name]['primary_key'] = col_name
+                        
+                        # Add searchable text fields
+                        if 'char' in col['data_type'].lower() or 'text' in col['data_type'].lower():
+                            metadata[table_name]['searchable_fields'].append(col_name)
+                            if len(metadata[table_name]['display_fields']) < 3:
+                                metadata[table_name]['display_fields'].append(col_name)
+                
+                # Store basic schema info
+                insert_query = """
+                    INSERT INTO atabot.managed_schemas 
+                    (schema_name, display_name, metadata, total_tables, is_active)
+                    VALUES ($1, $2, $3, $4, true)
+                    ON CONFLICT (schema_name) 
+                    DO UPDATE SET
+                        metadata = EXCLUDED.metadata,
+                        total_tables = EXCLUDED.total_tables,
+                        is_active = true
+                """
+                
+                await db_pool.execute(
+                    insert_query,
+                    schema,
+                    schema.replace('_', ' ').title(),
+                    json.dumps(metadata),
+                    len(tables)
+                )
+                
+                logger.info(f"Basic schema registration completed for {schema}")
         
     async def sync_table(
         self,
@@ -61,6 +144,71 @@ class SyncService:
         
         try:
             logger.info(f"Starting {mode} sync for {schema}.{table}")
+            
+            # Ensure schema has been analyzed first
+            await self._ensure_schema_analyzed(schema)
+            
+            # Get table info
+            table_info = await db_pool.get_table_info(schema, table)
+            if not table_info:
+                raise ValueError(f"Table {schema}.{table} not found")
+            
+            # Check if sync tracking exists
+            await self._ensure_sync_tracking(schema, table)
+            
+            if mode == "incremental":
+                result = await self._incremental_sync(schema, table, table_info)
+            else:
+                result = await self._full_sync(schema, table, table_info)
+            
+            # Update job status
+            self.active_jobs[job_id]["status"] = "completed"
+            self.active_jobs[job_id]["completed_at"] = datetime.now().isoformat()
+            self.active_jobs[job_id]["result"] = result
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Sync failed for {schema}.{table}: {e}")
+            self.active_jobs[job_id]["status"] = "failed"
+            self.active_jobs[job_id]["error"] = str(e)
+            raise
+    
+    async def sync_table_with_job_id(
+        self,
+        job_id: str,
+        schema: str,
+        table: str,
+        mode: str = "incremental"
+    ) -> Dict[str, Any]:
+        """
+        Sync a table to vector store with pre-generated job_id
+        
+        Args:
+            job_id: Pre-generated job ID
+            schema: Schema name
+            table: Table name
+            mode: 'full' for complete resync, 'incremental' for changes only
+            
+        Returns:
+            Sync result with statistics
+        """
+        start_time = datetime.now()
+        
+        # Register job with provided job_id
+        self.active_jobs[job_id] = {
+            "status": "running",
+            "started_at": start_time.isoformat(),
+            "schema": schema,
+            "table": table,
+            "mode": mode
+        }
+        
+        try:
+            logger.info(f"Starting {mode} sync for {schema}.{table} with job_id: {job_id}")
+            
+            # Ensure schema has been analyzed first
+            await self._ensure_schema_analyzed(schema)
             
             # Get table info
             table_info = await db_pool.get_table_info(schema, table)
@@ -247,7 +395,7 @@ class SyncService:
         self,
         schema: str,
         table: str,
-        rows: List[Any],  # Changed from asyncpg.Record
+        rows: List[Any],
         table_info: List[Dict[str, Any]]
     ) -> None:
         """
@@ -311,14 +459,27 @@ class SyncService:
         """
         parts = []
         
+        # Ensure patterns is a dictionary
+        if not isinstance(patterns, dict):
+            patterns = {}
+        
         # Add table context
         entity_type = patterns.get('entity_type', 'record')
         if entity_type != 'unknown':
             parts.append(f"This is a {entity_type} from {table}")
         
-        # Get display fields from patterns
+        # Get display fields from patterns (with safe defaults)
         display_fields = patterns.get('display_fields', [])
         searchable_fields = patterns.get('searchable_fields', [])
+        terminology = patterns.get('terminology', {})
+        
+        # Ensure fields are lists
+        if not isinstance(display_fields, list):
+            display_fields = []
+        if not isinstance(searchable_fields, list):
+            searchable_fields = []
+        if not isinstance(terminology, dict):
+            terminology = {}
         
         # Prioritize display fields
         important_fields = display_fields + searchable_fields
@@ -340,8 +501,8 @@ class SyncService:
             elif isinstance(value, Decimal):
                 value = float(value)
             
-            # Use learned terminology
-            field_label = patterns.get('terminology', {}).get(key, key.replace('_', ' '))
+            # Use learned terminology or fallback to formatted key
+            field_label = terminology.get(key, key.replace('_', ' '))
             
             # Add to text with priority
             if key in important_fields[:5]:  # Top 5 important fields
@@ -412,7 +573,7 @@ class SyncService:
                 schema,
                 table,
                 texts[i],
-                format_vector(embeddings[i]),  # Convert to string format for pgvector
+                format_vector(embeddings[i]),
                 json.dumps(metadata_list[i])
             ))
         
@@ -516,16 +677,60 @@ class SyncService:
         
         # Extract table-specific patterns
         if result['metadata']:
-            metadata = json.loads(result['metadata'])
-            if table in metadata:
-                patterns = metadata[table]
+            try:
+                metadata = json.loads(result['metadata']) if isinstance(result['metadata'], str) else result['metadata']
+                
+                # Check if metadata contains the table
+                if isinstance(metadata, dict) and table in metadata:
+                    table_data = metadata[table]
+                    
+                    # Ensure table_data is a dictionary
+                    if isinstance(table_data, dict):
+                        patterns = table_data
+                    else:
+                        logger.warning(f"Table data for {table} is not a dictionary: {type(table_data)}")
+                        patterns = {}
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning(f"Failed to parse metadata for {schema}.{table}: {e}")
+                patterns = {}
         
         # Add learned patterns
         if result['learned_patterns']:
-            learned = json.loads(result['learned_patterns'])
-            patterns['terminology'] = learned.get('terminology', {})
+            try:
+                learned = json.loads(result['learned_patterns']) if isinstance(result['learned_patterns'], str) else result['learned_patterns']
+                
+                if isinstance(learned, dict):
+                    # Safely merge terminology if it exists
+                    if 'terminology' in learned and isinstance(learned['terminology'], dict):
+                        if 'terminology' not in patterns:
+                            patterns['terminology'] = {}
+                        patterns['terminology'].update(learned['terminology'])
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning(f"Failed to parse learned patterns for {schema}: {e}")
+        
+        # Ensure patterns has the expected structure
+        if not isinstance(patterns, dict):
+            patterns = {}
+        
+        # Add default values for expected fields if they don't exist
+        patterns.setdefault('entity_type', 'record')
+        patterns.setdefault('display_fields', [])
+        patterns.setdefault('searchable_fields', [])
+        patterns.setdefault('terminology', {})
         
         return patterns
+    
+    async def sync_schema(
+        self,
+        schema: str,
+        tables: Optional[List[str]] = None,
+        mode: str = "incremental"
+    ) -> Dict[str, Any]:
+        """
+        Sync entire schema or specific tables (backward compatibility)
+        """
+        job_id = str(uuid.uuid4())
+        return await self.sync_schema_with_job_id(job_id, schema, tables, mode)
     
     async def sync_schema_with_job_id(
         self,
@@ -547,6 +752,9 @@ class SyncService:
             "mode": mode,
             "type": "schema_sync"
         }
+        
+        # Ensure schema has been analyzed first
+        await self._ensure_schema_analyzed(schema)
         
         # Get tables to sync
         if not tables:
@@ -579,77 +787,6 @@ class SyncService:
         }
         
         return self.active_jobs[job_id]["result"]
-    
-    async def sync_table_with_job_id(
-        self,
-        job_id: str,
-        schema: str,
-        table: str,
-        mode: str = "incremental"
-    ) -> Dict[str, Any]:
-        """
-        Sync a table to vector store with pre-generated job_id
-        
-        Args:
-            job_id: Pre-generated job ID
-            schema: Schema name
-            table: Table name
-            mode: 'full' for complete resync, 'incremental' for changes only
-            
-        Returns:
-            Sync result with statistics
-        """
-        start_time = datetime.now()
-        
-        # Register job with provided job_id
-        self.active_jobs[job_id] = {
-            "status": "running",
-            "started_at": start_time.isoformat(),
-            "schema": schema,
-            "table": table,
-            "mode": mode
-        }
-        
-        try:
-            logger.info(f"Starting {mode} sync for {schema}.{table} with job_id: {job_id}")
-            
-            # Get table info
-            table_info = await db_pool.get_table_info(schema, table)
-            if not table_info:
-                raise ValueError(f"Table {schema}.{table} not found")
-            
-            # Check if sync tracking exists
-            await self._ensure_sync_tracking(schema, table)
-            
-            if mode == "incremental":
-                result = await self._incremental_sync(schema, table, table_info)
-            else:
-                result = await self._full_sync(schema, table, table_info)
-            
-            # Update job status
-            self.active_jobs[job_id]["status"] = "completed"
-            self.active_jobs[job_id]["completed_at"] = datetime.now().isoformat()
-            self.active_jobs[job_id]["result"] = result
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Sync failed for {schema}.{table}: {e}")
-            self.active_jobs[job_id]["status"] = "failed"
-            self.active_jobs[job_id]["error"] = str(e)
-            raise
-    
-    async def sync_schema(
-        self,
-        schema: str,
-        tables: Optional[List[str]] = None,
-        mode: str = "incremental"
-    ) -> Dict[str, Any]:
-        """
-        Sync entire schema or specific tables (backward compatibility)
-        """
-        job_id = str(uuid.uuid4())
-        return await self.sync_schema_with_job_id(job_id, schema, tables, mode)
     
     async def enable_realtime_sync(
         self,

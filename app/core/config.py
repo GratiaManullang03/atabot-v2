@@ -11,74 +11,74 @@ class Settings(BaseSettings):
     """Application settings with environment variable support"""
     
     # Application
-    APP_NAME: str = "ATABOT 2.0"
-    APP_VERSION: str = "2.0.0"
-    APP_DESCRIPTION: str = "Universal Adaptive Business Intelligence"
-    DEBUG: bool = True
-    PORT: int = 8000
-    LOG_LEVEL: str = "INFO"
+    APP_NAME: str
+    APP_VERSION: str
+    APP_DESCRIPTION: str
+    DEBUG: bool
+    PORT: int
+    LOG_LEVEL: str
     
     # Database - PostgreSQL with pgvector
-    DATABASE_URL: str = "postgresql://user:password@localhost:5432/atabot"
-    DATABASE_POOL_SIZE: int = 20
-    DATABASE_MAX_OVERFLOW: int = 40
-    DATABASE_POOL_TIMEOUT: int = 30
+    DATABASE_URL: str
+    DATABASE_POOL_SIZE: int
+    DATABASE_MAX_OVERFLOW: int
+    DATABASE_POOL_TIMEOUT: int
     
     # AI Services - API only, no local models!
     VOYAGE_API_KEY: str
-    VOYAGE_MODEL: str = "voyage-3.5-lite"
-    VOYAGE_INPUT_TYPE: str = "document"  # 'document' or 'query'
-    EMBEDDING_DIMENSIONS: int = 1024
-    EMBEDDING_BATCH_SIZE: int = 5
+    VOYAGE_MODEL: str
+    VOYAGE_INPUT_TYPE: str
+    EMBEDDING_DIMENSIONS: int
+    EMBEDDING_BATCH_SIZE: int
     
     # LLM Configuration
     POE_API_KEY: str
-    LLM_MODEL: str = "GPT-3.5-Turbo"
-    LLM_MAX_TOKENS: int = 2000
-    LLM_TEMPERATURE: float = 0.1
-    LLM_TIMEOUT: int = 30
+    LLM_MODEL: str
+    LLM_MAX_TOKENS: int
+    LLM_TEMPERATURE: float
+    LLM_TIMEOUT: int
     
     # Performance Settings
-    SYNC_BATCH_SIZE: int = 10
-    SYNC_MAX_WORKERS: int = 1
-    VECTOR_SEARCH_LIMIT: int = 10
-    MAX_CONCURRENT_REQUESTS: int = 5
-    QUERY_TIMEOUT: int = 30
+    SYNC_BATCH_SIZE: int
+    SYNC_MAX_WORKERS: int
+    VECTOR_SEARCH_LIMIT: int
+    MAX_CONCURRENT_REQUESTS: int
+    QUERY_TIMEOUT: int
 
-    # Rate Limiting Settings (NEW)
-    VOYAGE_RATE_LIMIT_RPM: int = 2
-    VOYAGE_RATE_LIMIT_DELAY: int = 30
+    # Rate Limiting Settings
+    VOYAGE_RATE_LIMIT_RPM: int
+    VOYAGE_RATE_LIMIT_DELAY: int
     
     # Feature Flags
-    ENABLE_STREAMING: bool = True
-    ENABLE_REALTIME_SYNC: bool = True
-    ENABLE_CACHE: bool = True
-    ENABLE_QUERY_DECOMPOSITION: bool = True
-    ENABLE_HYBRID_SEARCH: bool = True
+    ENABLE_STREAMING: bool
+    ENABLE_REALTIME_SYNC: bool
+    ENABLE_CACHE: bool
+    ENABLE_QUERY_DECOMPOSITION: bool
+    ENABLE_HYBRID_SEARCH: bool
     
     # Cache Settings
-    CACHE_TTL: int = 7200  # 1 hour
-    CACHE_MAX_SIZE: int = 5000
-    REDIS_URL: Optional[str] = None  # Optional Redis for distributed cache
+    CACHE_TTL: int
+    CACHE_MAX_SIZE: int
+    REDIS_URL: Optional[str]
     
     # Security
-    SECRET_KEY: str = "change-this-in-production"
-    ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    SECRET_KEY: str
+    ALGORITHM: str
+    ACCESS_TOKEN_EXPIRE_MINUTES: int
     
     # CORS
-    CORS_ORIGINS: List[str] = ["*"]
-    CORS_ALLOW_CREDENTIALS: bool = True
-    CORS_ALLOW_METHODS: List[str] = ["*"]
-    CORS_ALLOW_HEADERS: List[str] = ["*"]
+    CORS_ORIGINS: List[str]
+    CORS_ALLOW_CREDENTIALS: bool
+    CORS_ALLOW_METHODS: List[str]
+    CORS_ALLOW_HEADERS: List[str]
     
     # Rate Limiting
-    RATE_LIMIT_ENABLED: bool = True
-    RATE_LIMIT_PER_MINUTE: int = 60
+    RATE_LIMIT_ENABLED: bool
+    RATE_LIMIT_PER_MINUTE: int
     
     # Monitoring
-    ENABLE_METRICS: bool = True
-    METRICS_PORT: int = 9090
+    ENABLE_METRICS: bool
+    METRICS_PORT: int
     
     class Config:
         env_file = ".env"

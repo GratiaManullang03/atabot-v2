@@ -195,7 +195,7 @@ class DatabasePool:
             WITH table_stats AS (
                 SELECT 
                     schemaname,
-                    tablename,
+                    relname,
                     n_live_tup as row_count
                 FROM pg_stat_user_tables
                 WHERE schemaname = $1
@@ -219,7 +219,7 @@ class DatabasePool:
                 pg_catalog.obj_description(c.oid, 'pg_class') as table_comment
             FROM information_schema.tables t
             LEFT JOIN table_stats ts 
-                ON ts.tablename = t.table_name
+                ON ts.relname = t.table_name
                 AND ts.schemaname = t.table_schema
             LEFT JOIN table_sizes tsz
                 ON tsz.table_name = t.table_name
