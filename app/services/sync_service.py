@@ -5,7 +5,6 @@ Handles bulk and real-time sync of data to vector store
 from typing import Dict, List, Any, Optional
 from datetime import datetime, date
 import asyncio
-import asyncpg
 import hashlib
 import json
 from loguru import logger
@@ -15,6 +14,12 @@ import uuid
 from app.core.database import db_pool
 from app.core.embeddings import embedding_service
 from app.core.config import settings
+
+def quote_ident(name: str) -> str:
+    """
+    Quote PostgreSQL identifier
+    """
+    return f'"{name}"'
 
 class SyncService:
     """
@@ -100,7 +105,7 @@ class SyncService:
         # Get total row count
         count_query = f"""
             SELECT COUNT(*) as total 
-            FROM {asyncpg.introspection.quote_ident(schema)}.{asyncpg.introspection.quote_ident(table)}
+            FROM {quote_ident(schema)}.{quote_ident(table)}
         """
         total_rows = await db_pool.fetchval(count_query)
         
@@ -122,11 +127,17 @@ class SyncService:
         
         for offset in range(0, total_rows, batch_size):
             # Fetch batch
-            query = f"""
-                SELECT * FROM {asyncpg.introspection.quote_ident(schema)}.{asyncpg.introspection.quote_ident(table)}
-                ORDER BY {asyncpg.introspection.quote_ident(pk_column) if pk_column else '1'}
-                LIMIT $1 OFFSET $2
-            """
+            if pk_column:
+                query = f"""
+                    SELECT * FROM {quote_ident(schema)}.{quote_ident(table)}
+                    ORDER BY {quote_ident(pk_column)}
+                    LIMIT $1 OFFSET $2
+                """
+            else:
+                query = f"""
+                    SELECT * FROM {quote_ident(schema)}.{quote_ident(table)}
+                    LIMIT $1 OFFSET $2
+                """
             
             rows = await db_pool.fetch(query, batch_size, offset)
             
@@ -174,7 +185,7 @@ class SyncService:
         
         # Look for updated_at, modified_at, or created_at columns
         update_column = None
-        for col in ['updated_at', 'modified_at', 'changed_at', 'last_modified']:
+        for col in ['updated_at', 'modified_at', 'changed_at', 'last_modified', 'created_at']:
             if col in [c['column_name'] for c in table_info]:
                 update_column = col
                 break
@@ -190,15 +201,15 @@ class SyncService:
         # Query for changed rows
         if last_sync:
             query = f"""
-                SELECT * FROM {asyncpg.introspection.quote_ident(schema)}.{asyncpg.introspection.quote_ident(table)}
-                WHERE {asyncpg.introspection.quote_ident(update_column)} > $1
-                ORDER BY {asyncpg.introspection.quote_ident(update_column)}
+                SELECT * FROM {quote_ident(schema)}.{quote_ident(table)}
+                WHERE {quote_ident(update_column)} > $1
+                ORDER BY {quote_ident(update_column)}
             """
             rows = await db_pool.fetch(query, last_sync)
         else:
             # First sync, get all rows
             query = f"""
-                SELECT * FROM {asyncpg.introspection.quote_ident(schema)}.{asyncpg.introspection.quote_ident(table)}
+                SELECT * FROM {quote_ident(schema)}.{quote_ident(table)}
             """
             rows = await db_pool.fetch(query)
         
@@ -236,7 +247,7 @@ class SyncService:
         self,
         schema: str,
         table: str,
-        rows: List[asyncpg.Record],
+        rows: List[Any],  # Changed from asyncpg.Record
         table_info: List[Dict[str, Any]]
     ) -> None:
         """
@@ -385,7 +396,7 @@ class SyncService:
                 content = EXCLUDED.content,
                 embedding = EXCLUDED.embedding,
                 metadata = EXCLUDED.metadata,
-                created_at = NOW()
+                updated_at = NOW()
         """
         
         # Batch insert

@@ -219,6 +219,10 @@ class SearchService:
         """
         Traditional SQL search with exact conditions
         """
+        # Quote identifier function
+        def quote_ident(name: str) -> str:
+            return f'"{name}"'
+        
         # Build WHERE clause
         where_parts = []
         params = []
@@ -228,29 +232,29 @@ class SearchService:
             if isinstance(value, dict):
                 # Handle operators
                 if 'eq' in value:
-                    where_parts.append(f"{column} = ${param_count}")
+                    where_parts.append(f"{quote_ident(column)} = ${param_count}")
                     params.append(value['eq'])
                     param_count += 1
                 elif 'like' in value:
-                    where_parts.append(f"{column} ILIKE ${param_count}")
+                    where_parts.append(f"{quote_ident(column)} ILIKE ${param_count}")
                     params.append(f"%{value['like']}%")
                     param_count += 1
                 elif 'in' in value:
                     placeholders = ', '.join([f"${i}" for i in range(param_count, param_count + len(value['in']))])
-                    where_parts.append(f"{column} IN ({placeholders})")
+                    where_parts.append(f"{quote_ident(column)} IN ({placeholders})")
                     params.extend(value['in'])
                     param_count += len(value['in'])
             else:
                 # Simple equality
-                where_parts.append(f"{column} = ${param_count}")
+                where_parts.append(f"{quote_ident(column)} = ${param_count}")
                 params.append(value)
                 param_count += 1
         
         where_clause = " AND ".join(where_parts) if where_parts else "1=1"
         
-        # Execute query
+        # Execute query - FIXED
         query = f"""
-            SELECT * FROM {asyncpg.introspection.quote_ident(schema)}.{asyncpg.introspection.quote_ident(table)}
+            SELECT * FROM {quote_ident(schema)}.{quote_ident(table)}
             WHERE {where_clause}
             LIMIT ${param_count}
         """

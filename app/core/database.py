@@ -186,7 +186,7 @@ class DatabasePool:
     
     async def get_tables(self, schema: str) -> List[Dict[str, Any]]:
         """Get all tables in a schema with row counts"""
-        # Query yang lebih robust untuk mendapatkan table info dan row counts
+        # Simplified query yang robust untuk semua PostgreSQL version
         query = """
             WITH table_stats AS (
                 SELECT 
@@ -195,23 +195,33 @@ class DatabasePool:
                     n_live_tup as row_count
                 FROM pg_stat_user_tables
                 WHERE schemaname = $1
+            ),
+            table_sizes AS (
+                SELECT 
+                    c.relname as table_name,
+                    c.reltuples::BIGINT as estimated_rows
+                FROM pg_catalog.pg_class c
+                JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = $1 AND c.relkind = 'r'
             )
             SELECT 
                 t.table_name,
                 t.table_type,
-                pg_catalog.obj_description(c.oid, 'pg_class') as table_comment,
                 COALESCE(
                     ts.row_count,
-                    c.reltuples::BIGINT,
+                    tsz.estimated_rows,
                     0
-                ) as estimated_row_count
+                ) as estimated_row_count,
+                pg_catalog.obj_description(c.oid, 'pg_class') as table_comment
             FROM information_schema.tables t
-            LEFT JOIN pg_catalog.pg_class c 
-                ON c.relname = t.table_name
-                AND c.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1)
             LEFT JOIN table_stats ts 
                 ON ts.tablename = t.table_name
                 AND ts.schemaname = t.table_schema
+            LEFT JOIN table_sizes tsz
+                ON tsz.table_name = t.table_name
+            LEFT JOIN pg_catalog.pg_class c 
+                ON c.relname = t.table_name
+                AND c.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1)
             WHERE t.table_schema = $1
                 AND t.table_type = 'BASE TABLE'
             ORDER BY t.table_name
@@ -221,21 +231,38 @@ class DatabasePool:
             rows = await self.fetch(query, schema)
             return [dict(row) for row in rows]
         except Exception as e:
-            # Fallback to simpler query if the above fails
-            logger.warning(f"Complex query failed, using fallback: {e}")
+            # Fallback to simpler query if complex one fails
+            logger.warning(f"Complex query failed, using simple fallback: {e}")
             fallback_query = """
                 SELECT 
                     table_name,
                     'BASE TABLE' as table_type,
-                    NULL as table_comment,
-                    0 as estimated_row_count
+                    0 as estimated_row_count,
+                    NULL as table_comment
                 FROM information_schema.tables
                 WHERE table_schema = $1
                     AND table_type = 'BASE TABLE'
                 ORDER BY table_name
             """
             rows = await self.fetch(fallback_query, schema)
-            return [dict(row) for row in rows]
+            
+            # Try to get row counts separately
+            result = []
+            for row in rows:
+                row_dict = dict(row)
+                table_name = row_dict['table_name']
+                
+                # Try to get row count
+                try:
+                    count_query = f'SELECT COUNT(*) FROM "{schema}"."{table_name}"'
+                    row_count = await self.fetchval(count_query)
+                    row_dict['estimated_row_count'] = row_count
+                except:
+                    row_dict['estimated_row_count'] = 0
+                
+                result.append(row_dict)
+            
+            return result
     
     async def get_foreign_keys(self, schema: str) -> List[Dict[str, Any]]:
         """Get all foreign key relationships in a schema"""
@@ -282,20 +309,25 @@ class DatabasePool:
     
     async def create_trigger(self, schema: str, table: str) -> None:
         """Create real-time sync trigger for a table"""
+        
+        def quote_ident(name: str) -> str:
+            """Quote PostgreSQL identifier"""
+            return f'"{name}"'
+        
         trigger_name = f"atabot_sync_{table}"
         
         # Drop existing trigger if exists
         drop_query = f"""
-            DROP TRIGGER IF EXISTS {trigger_name} 
-            ON {asyncpg.introspection.quote_ident(schema)}.{asyncpg.introspection.quote_ident(table)}
+            DROP TRIGGER IF EXISTS {quote_ident(trigger_name)} 
+            ON {quote_ident(schema)}.{quote_ident(table)}
         """
         await self.execute(drop_query)
         
         # Create new trigger
         create_query = f"""
-            CREATE TRIGGER {trigger_name}
+            CREATE TRIGGER {quote_ident(trigger_name)}
             AFTER INSERT OR UPDATE OR DELETE
-            ON {asyncpg.introspection.quote_ident(schema)}.{asyncpg.introspection.quote_ident(table)}
+            ON {quote_ident(schema)}.{quote_ident(table)}
             FOR EACH ROW
             EXECUTE FUNCTION atabot.notify_data_change()
         """

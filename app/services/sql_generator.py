@@ -197,20 +197,20 @@ class SQLGenerator:
         
         prompt = f"""Generate PostgreSQL query for this aggregation request.
 
-Schema: {schema}
-Query: "{query}"
+            Schema: {schema}
+            Query: "{query}"
 
-Available tables and columns:
-{tables_context}
+            Available tables and columns:
+            {tables_context}
 
-Requirements:
-- Use appropriate aggregation functions: {', '.join(intent['aggregations'])}
-{"- Group by: " + ', '.join(intent['grouping']) if intent['grouping'] else ""}
-{"- Order by: " + ', '.join(intent['ordering']) if intent['ordering'] else ""}
-{"- Limit: " + str(intent['limit']) if intent['limit'] else ""}
+            Requirements:
+            - Use appropriate aggregation functions: {', '.join(intent['aggregations'])}
+            {"- Group by: " + ', '.join(intent['grouping']) if intent['grouping'] else ""}
+            {"- Order by: " + ', '.join(intent['ordering']) if intent['ordering'] else ""}
+            {"- Limit: " + str(intent['limit']) if intent['limit'] else ""}
 
-Return ONLY the SQL query without explanation."""
-        
+            Return ONLY the SQL query without explanation."""
+                    
         sql = await llm_client.generate(
             prompt=prompt,
             temperature=0.1,
@@ -233,19 +233,19 @@ Return ONLY the SQL query without explanation."""
         
         prompt = f"""Generate PostgreSQL SELECT query for this search request.
 
-Schema: {schema}
-Query: "{query}"
+            Schema: {schema}
+            Query: "{query}"
 
-Available tables and columns:
-{tables_context}
+            Available tables and columns:
+            {tables_context}
 
-Requirements:
-- Include relevant WHERE conditions
-- Use ILIKE for text searches
-- Return all relevant columns
-{"- Limit: " + str(intent['limit']) if intent['limit'] else "- Limit: 100"}
+            Requirements:
+            - Include relevant WHERE conditions
+            - Use ILIKE for text searches
+            - Return all relevant columns
+            {"- Limit: " + str(intent['limit']) if intent['limit'] else "- Limit: 100"}
 
-Return ONLY the SQL query without explanation."""
+            Return ONLY the SQL query without explanation."""
         
         sql = await llm_client.generate(
             prompt=prompt,
@@ -269,18 +269,18 @@ Return ONLY the SQL query without explanation."""
         
         prompt = f"""Generate PostgreSQL query to compare data as requested.
 
-Schema: {schema}
-Query: "{query}"
+            Schema: {schema}
+            Query: "{query}"
 
-Available tables and columns:
-{tables_context}
+            Available tables and columns:
+            {tables_context}
 
-Requirements:
-- Use CASE statements or UNION for comparisons
-- Include clear labels for compared items
-- Calculate differences if applicable
+            Requirements:
+            - Use CASE statements or UNION for comparisons
+            - Include clear labels for compared items
+            - Calculate differences if applicable
 
-Return ONLY the SQL query without explanation."""
+            Return ONLY the SQL query without explanation."""
         
         sql = await llm_client.generate(
             prompt=prompt,
@@ -305,22 +305,22 @@ Return ONLY the SQL query without explanation."""
         
         prompt = f"""Generate PostgreSQL query with appropriate JOINs.
 
-Schema: {schema}
-Query: "{query}"
+            Schema: {schema}
+            Query: "{query}"
 
-Available tables and columns:
-{tables_context}
+            Available tables and columns:
+            {tables_context}
 
-Known relationships:
-{relationships}
+            Known relationships:
+            {relationships}
 
-Requirements:
-- Use appropriate JOIN types (INNER, LEFT, etc.)
-- Join on correct foreign key relationships
-- Select relevant columns from all joined tables
-- Avoid Cartesian products
+            Requirements:
+            - Use appropriate JOIN types (INNER, LEFT, etc.)
+            - Join on correct foreign key relationships
+            - Select relevant columns from all joined tables
+            - Avoid Cartesian products
 
-Return ONLY the SQL query without explanation."""
+            Return ONLY the SQL query without explanation."""
         
         sql = await llm_client.generate(
             prompt=prompt,
@@ -348,13 +348,13 @@ Return ONLY the SQL query without explanation."""
             tables_context = self._format_schema_context(schema_info, limit=5)
             prompt = f"""Generate PostgreSQL SELECT query.
 
-Schema: {schema}
-Query: "{query}"
+            Schema: {schema}
+            Query: "{query}"
 
-Available tables:
-{tables_context}
+            Available tables:
+            {tables_context}
 
-Return ONLY the SQL query without explanation."""
+            Return ONLY the SQL query without explanation."""
             
             sql = await llm_client.generate(
                 prompt=prompt,
@@ -440,7 +440,88 @@ Return ONLY the SQL query without explanation."""
                 if entity_type and entity_type in query_lower:
                     return table_name
         
+        # If no specific table found, return the first table
+        if tables:
+            return list(tables.keys())[0]
+        
         return None
+    
+    async def _validate_sql(self, sql: str, schema: str) -> str:
+        """
+        Validate and potentially fix SQL query
+        """
+        try:
+            if not sql.strip():
+                raise ValueError("Empty SQL query")
+            
+            # Check for dangerous operations
+            dangerous_keywords = ['DROP', 'DELETE', 'TRUNCATE', 'ALTER', 'CREATE', 'INSERT', 'UPDATE']
+            sql_upper = sql.upper()
+            for keyword in dangerous_keywords:
+                if keyword in sql_upper:
+                    raise ValueError(f"Dangerous operation {keyword} not allowed")
+            
+            # Fix schema references - prevent double schema naming
+            # Remove any existing schema references first
+            sql = re.sub(rf'\b{re.escape(schema)}\.{re.escape(schema)}\b', schema, sql)
+            
+            # Ensure proper schema qualification
+            if f'"{schema}".' not in sql and f'{schema}.' not in sql:
+                # Add schema to unqualified table references
+                sql = re.sub(
+                    r'\bFROM\s+([a-zA-Z_][a-zA-Z0-9_]*)\b',
+                    rf'FROM "{schema}".\1',
+                    sql,
+                    flags=re.IGNORECASE
+                )
+                sql = re.sub(
+                    r'\bJOIN\s+([a-zA-Z_][a-zA-Z0-9_]*)\b',
+                    rf'JOIN "{schema}".\1',
+                    sql,
+                    flags=re.IGNORECASE
+                )
+            
+            return sql
+            
+        except Exception as e:
+            logger.warning(f"SQL validation warning: {e}")
+            return sql
+    
+    async def _generate_simple_sql(
+        self,
+        query: str,
+        schema: str,
+        schema_info: Dict[str, Any],
+        intent: Dict[str, Any]
+    ) -> str:
+        """
+        Generate simple SELECT SQL - FIXED VERSION
+        """
+        # Determine most likely table
+        table = self._identify_target_table(query, schema_info)
+        
+        if not table:
+            # Fallback to LLM if no table identified
+            tables_context = self._format_schema_context(schema_info, limit=5)
+            prompt = f"""Generate PostgreSQL SELECT query.
+
+                Schema: {schema}
+                Query: "{query}"
+
+                Available tables:
+                {tables_context}
+
+                Return ONLY the SQL query without explanation."""
+            
+            sql = await llm_client.generate(
+                prompt=prompt,
+                temperature=0.1,
+                max_tokens=300
+            )
+            return self._clean_sql(sql)
+        
+        # Generate simple SELECT with proper schema qualification
+        return f'SELECT * FROM "{schema}"."{table}" LIMIT 100'
     
     def _extract_entities(self, query: str) -> List[str]:
         """
