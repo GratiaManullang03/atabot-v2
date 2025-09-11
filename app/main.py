@@ -12,8 +12,7 @@ import sys
 from app.core.config import settings
 from app.core.database import db_pool
 from app.core.initializer import app_initializer
-from app.api.v1.endpoints import health, schemas, sync, chat
-
+from app.api.v1.api import api_router
 
 # Configure Loguru
 logger.remove()
@@ -77,12 +76,7 @@ app.add_middleware(
     allow_headers=settings.CORS_ALLOW_HEADERS
 )
 
-# Include API routers
-app.include_router(health.router, prefix="/api/v1/health", tags=["Health"])
-app.include_router(schemas.router, prefix="/api/v1/schemas", tags=["Schemas"])
-app.include_router(sync.router, prefix="/api/v1/sync", tags=["Synchronization"])
-app.include_router(chat.router, prefix="/api/v1/chat", tags=["Chat"])
-
+app.include_router(api_router, prefix="/api/v1")
 
 # Root endpoint
 @app.get("/", tags=["Root"])

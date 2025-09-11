@@ -5,7 +5,6 @@ Combines traditional SQL filtering with semantic vector similarity
 from typing import Dict, List, Any, Optional
 from loguru import logger
 import json
-import asyncpg
 
 from app.core.database import db_pool
 from app.core.embeddings import embedding_service

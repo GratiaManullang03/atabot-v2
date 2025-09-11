@@ -8,8 +8,7 @@ from loguru import logger
 import asyncio
 from tenacity import retry, stop_after_attempt, wait_exponential
 import hashlib
-import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from .config import settings
 
@@ -65,7 +64,7 @@ class EmbeddingService:
         self.batch_size = min(settings.EMBEDDING_BATCH_SIZE, 10)  # Max 10 texts per request
         
         # Rate limiter: 3 requests per minute for free tier
-        self.rate_limiter = RateLimiter(max_requests=2, window_seconds=60)  # Even more conservative: 2 RPM
+        self.rate_limiter = RateLimiter(max_requests=3, window_seconds=60)  # Even more conservative: 3 RPM
         
         # Simple in-memory cache for embeddings
         self._cache: Dict[str, List[float]] = {}
@@ -175,7 +174,7 @@ class EmbeddingService:
         
         total_batches = (len(valid_texts) + micro_batch_size - 1) // micro_batch_size
         
-        logger.info(f"Processing {len(valid_texts)} texts in {total_batches} batches (rate limited to 2 RPM)")
+        logger.info(f"Processing {len(valid_texts)} texts in {total_batches} batches (rate limited to 3 RPM)")
         
         # Process in micro-batches with rate limiting
         for batch_num, batch_start in enumerate(range(0, len(valid_texts), micro_batch_size)):
