@@ -11,6 +11,10 @@ import json
 
 from .config import settings
 
+def quote_ident(name: str) -> str:
+    """Quote PostgreSQL identifier"""
+    return f'"{name}"'
+
 class DatabasePool:
     """Manages async PostgreSQL connection pool"""
     
@@ -290,7 +294,7 @@ class DatabasePool:
         """Get sample data from a table"""
         # Use dynamic SQL safely with identifier quoting
         query = f"""
-            SELECT * FROM {asyncpg.introspection.quote_ident(schema)}.{asyncpg.introspection.quote_ident(table)}
+            SELECT * FROM {quote_ident(schema)}.{quote_ident(table)}
             LIMIT $1
         """
         
@@ -309,10 +313,6 @@ class DatabasePool:
     
     async def create_trigger(self, schema: str, table: str) -> None:
         """Create real-time sync trigger for a table"""
-        
-        def quote_ident(name: str) -> str:
-            """Quote PostgreSQL identifier"""
-            return f'"{name}"'
         
         trigger_name = f"atabot_sync_{table}"
         
