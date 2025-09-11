@@ -147,11 +147,11 @@ class QueryDecomposer:
         try:
             # Build context-aware prompt
             system_prompt = """You are an expert at breaking down complex questions into simple, atomic sub-questions.
-Each sub-question should:
-1. Ask for exactly ONE piece of information
-2. Be answerable independently
-3. Preserve the original language and terminology
-4. Together, fully answer the original question"""
+                Each sub-question should:
+                1. Ask for exactly ONE piece of information
+                2. Be answerable independently
+                3. Preserve the original language and terminology
+                4. Together, fully answer the original question"""
             
             # Add context hints
             context_hints = []
@@ -166,18 +166,19 @@ Each sub-question should:
             
             prompt = f"""Decompose this complex query into simple sub-queries:
 
-Query: "{query}"
+                Query: "{query}"
 
-{chr(10).join(context_hints) if context_hints else ''}
+                {chr(10).join(context_hints) if context_hints else ''}
 
-Rules:
-1. Each sub-query must be atomic (single question)
-2. Preserve exact names, terms, and language
-3. If comparing items, create separate queries for each
-4. If aggregating, separate the retrieval from aggregation
+                Rules:
+                1. Each sub-query must be atomic (single question)
+                2. Preserve exact names, terms, and language
+                3. If comparing items, create separate queries for each
+                4. If aggregating, separate the retrieval from aggregation
 
-Output format: Return ONLY a JSON array of strings
-Example: ["question 1", "question 2", "question 3"]"""
+                Output format: Return ONLY a JSON array of strings
+                Example: ["question 1", "question 2", "question 3"]
+            """
             
             # Get AI response
             response = await llm_client.generate(
@@ -323,14 +324,15 @@ Example: ["question 1", "question 2", "question 3"]"""
         try:
             prompt = f"""Combine these answers into a coherent response to the original question.
 
-Original question: "{original_query}"
+                Original question: "{original_query}"
 
-Sub-questions and answers:
-{chr(10).join([f"Q: {q}{chr(10)}A: {a}" for q, a in zip(sub_queries, sub_answers)])}
+                Sub-questions and answers:
+                {chr(10).join([f"Q: {q}{chr(10)}A: {a}" for q, a in zip(sub_queries, sub_answers)])}
 
-Create a natural, unified response that fully answers the original question.
-If the question was a comparison, clearly present both sides.
-If the question asked for multiple items, list them clearly."""
+                Create a natural, unified response that fully answers the original question.
+                If the question was a comparison, clearly present both sides.
+                If the question asked for multiple items, list them clearly.
+            """
             
             combined = await llm_client.generate(
                 prompt=prompt,
@@ -396,6 +398,59 @@ If the question asked for multiple items, list them clearly."""
             intent['requires_joining'] = True
         
         return intent
+    
+    async def process_complex_query_optimized(
+        self,
+        query: str,
+        schema: str,
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Process query with SINGLE LLM call
+        """
+        # Try smart router first
+        from app.services.smart_router import smart_router
+        
+        sql = smart_router.generate_sql_without_llm(query, schema, context.get('table'))
+        if sql:
+            # No LLM needed!
+            return {
+                'sql': sql,
+                'llm_calls': 0,
+                'method': 'rule_based'
+            }
+        
+        # For complex queries, use SINGLE LLM call with combined prompt
+        combined_prompt = f"""
+            Analyze and process this query in ONE step:
+            Query: "{query}"
+            Schema: {schema}
+            
+            Provide:
+            1. SQL query
+            2. Natural language answer template
+            3. Whether decomposition is needed (yes/no)
+            
+            Format response as JSON:
+            {{
+                "sql": "SELECT ...",
+                "answer_template": "The result is {{result}}",
+                "needs_decomposition": false
+            }}
+        """
+        
+        # Single LLM call!
+        response = await llm_client.generate(
+            prompt=combined_prompt,
+            temperature=0.1,
+            max_tokens=500
+        )
+        
+        return {
+            'response': response,
+            'llm_calls': 1,  # Only 1 call!
+            'method': 'llm_optimized'
+        }
 
 # Global query decomposer instance
 query_decomposer = QueryDecomposer()

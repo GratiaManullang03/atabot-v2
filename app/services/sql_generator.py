@@ -209,7 +209,8 @@ class SQLGenerator:
             {"- Order by: " + ', '.join(intent['ordering']) if intent['ordering'] else ""}
             {"- Limit: " + str(intent['limit']) if intent['limit'] else ""}
 
-            Return ONLY the SQL query without explanation."""
+            Return ONLY the SQL query without explanation.
+        """
                     
         sql = await llm_client.generate(
             prompt=prompt,
@@ -245,7 +246,8 @@ class SQLGenerator:
             - Return all relevant columns
             {"- Limit: " + str(intent['limit']) if intent['limit'] else "- Limit: 100"}
 
-            Return ONLY the SQL query without explanation."""
+            Return ONLY the SQL query without explanation.
+        """
         
         sql = await llm_client.generate(
             prompt=prompt,
@@ -280,7 +282,8 @@ class SQLGenerator:
             - Include clear labels for compared items
             - Calculate differences if applicable
 
-            Return ONLY the SQL query without explanation."""
+            Return ONLY the SQL query without explanation.
+        """
         
         sql = await llm_client.generate(
             prompt=prompt,
@@ -320,7 +323,8 @@ class SQLGenerator:
             - Select relevant columns from all joined tables
             - Avoid Cartesian products
 
-            Return ONLY the SQL query without explanation."""
+            Return ONLY the SQL query without explanation.
+        """
         
         sql = await llm_client.generate(
             prompt=prompt,
@@ -354,7 +358,8 @@ class SQLGenerator:
             Available tables:
             {tables_context}
 
-            Return ONLY the SQL query without explanation."""
+            Return ONLY the SQL query without explanation.
+        """
             
             sql = await llm_client.generate(
                 prompt=prompt,
@@ -495,7 +500,7 @@ class SQLGenerator:
         intent: Dict[str, Any]
     ) -> str:
         """
-        Generate simple SELECT SQL - FIXED VERSION
+        Generate simple SELECT SQL
         """
         # Determine most likely table
         table = self._identify_target_table(query, schema_info)

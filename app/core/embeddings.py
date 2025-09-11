@@ -58,13 +58,11 @@ class EmbeddingService:
         self.client = voyageai.Client(api_key=settings.VOYAGE_API_KEY)
         self.model = settings.VOYAGE_MODEL
         self.dimensions = settings.EMBEDDING_DIMENSIONS
-        
-        # Reduced batch size for rate limiting
-        # With 3 RPM limit, we need to be very conservative
-        self.batch_size = min(settings.EMBEDDING_BATCH_SIZE, 10)  # Max 10 texts per request
-        
-        # Rate limiter: 3 requests per minute for free tier
-        self.rate_limiter = RateLimiter(max_requests=3, window_seconds=60)  # Even more conservative: 3 RPM
+
+        self.batch_size = 120
+                
+        # Rate limiter: 2 requests per minute for free tier
+        self.rate_limiter = RateLimiter(max_requests=2, window_seconds=60)  # Even more conservative: 2 RPM
         
         # Simple in-memory cache for embeddings
         self._cache: Dict[str, List[float]] = {}

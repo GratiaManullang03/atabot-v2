@@ -251,7 +251,7 @@ class SearchService:
         
         where_clause = " AND ".join(where_parts) if where_parts else "1=1"
         
-        # Execute query - FIXED
+        # Execute query
         query = f"""
             SELECT * FROM {quote_ident(schema)}.{quote_ident(table)}
             WHERE {where_clause}

@@ -157,16 +157,17 @@ class AnswerGenerator:
         # Use LLM to generate natural language summary
         prompt = f"""Convert this data into a natural language answer.
 
-Original question: "{query}"
-Data:
-{formatted_data}
+            Original question: "{query}"
+            Data:
+            {formatted_data}
 
-Requirements:
-- Be concise and clear
-- Use natural language, not technical terms
-- {"Answer in Indonesian" if language == "id" else "Answer in English"}
-- If there are multiple rows, summarize key findings
-- Format numbers appropriately (use commas for thousands)"""
+            Requirements:
+            - Be concise and clear
+            - Use natural language, not technical terms
+            - {"Answer in Indonesian" if language == "id" else "Answer in English"}
+            - If there are multiple rows, summarize key findings
+            - Format numbers appropriately (use commas for thousands)
+        """
         
         answer = await llm_client.generate(
             prompt=prompt,
@@ -190,16 +191,17 @@ Requirements:
         
         prompt = f"""Generate a comparison analysis from this data.
 
-Original question: "{query}"
-Data:
-{formatted_data}
+            Original question: "{query}"
+            Data:
+            {formatted_data}
 
-Requirements:
-- Clearly compare the items requested
-- Highlight differences and similarities
-- Use percentages or ratios where appropriate
-- {"Answer in Indonesian" if language == "id" else "Answer in English"}
-- Be objective and data-driven"""
+            Requirements:
+            - Clearly compare the items requested
+            - Highlight differences and similarities
+            - Use percentages or ratios where appropriate
+            - {"Answer in Indonesian" if language == "id" else "Answer in English"}
+            - Be objective and data-driven
+        """
         
         answer = await llm_client.generate(
             prompt=prompt,
@@ -298,17 +300,18 @@ Requirements:
         
         prompt = f"""Summarize this data into key insights.
 
-Original question: "{query}"
-Total results: {len(results)}
-Sample data (first {sample_size} rows):
-{formatted_sample}
+            Original question: "{query}"
+            Total results: {len(results)}
+            Sample data (first {sample_size} rows):
+            {formatted_sample}
 
-Requirements:
-- Provide key statistics (totals, averages, ranges)
-- Highlight notable patterns or outliers
-- Mention this is based on {len(results)} total results
-- {"Answer in Indonesian" if language == "id" else "Answer in English"}
-- Be concise but informative"""
+            Requirements:
+            - Provide key statistics (totals, averages, ranges)
+            - Highlight notable patterns or outliers
+            - Mention this is based on {len(results)} total results
+            - {"Answer in Indonesian" if language == "id" else "Answer in English"}
+            - Be concise but informative
+        """
         
         answer = await llm_client.generate(
             prompt=prompt,
