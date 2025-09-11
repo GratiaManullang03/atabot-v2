@@ -26,12 +26,13 @@ async def sync_single_table(
     Synchronize a single table to vector store
     """
     try:
-        # Generate job ID
+        # Generate job ID ONCE
         job_id = str(uuid.uuid4())
         
-        # Start sync in background
+        # Start sync in background WITH the same job_id
         background_tasks.add_task(
-            sync_service.sync_table,
+            sync_service.sync_table_with_job_id,  # Use new method that accepts job_id
+            job_id=job_id,
             schema=request.schema_name,
             table=request.table_name,
             mode="full" if request.force_full else "incremental"
@@ -59,9 +60,10 @@ async def sync_batch_tables(
     try:
         job_id = str(uuid.uuid4())
         
-        # Start batch sync in background
+        # Start batch sync in background with job_id
         background_tasks.add_task(
-            sync_service.sync_schema,
+            sync_service.sync_schema_with_job_id,
+            job_id=job_id,
             schema=request.schema_name,
             tables=request.tables,
             mode="full" if request.force_full else "incremental"
@@ -89,9 +91,10 @@ async def initial_sync(
     try:
         job_id = str(uuid.uuid4())
         
-        # Start full schema sync
+        # Start full schema sync with job_id
         background_tasks.add_task(
-            sync_service.sync_schema,
+            sync_service.sync_schema_with_job_id,
+            job_id=job_id,
             schema=schema_name,
             mode="full"
         )

@@ -387,11 +387,16 @@ class SyncService:
         """
         Store embeddings in database
         """
-        # Prepare batch insert
+        # Convert embeddings to PostgreSQL vector format string
+        def format_vector(embedding: List[float]) -> str:
+            """Convert list of floats to PostgreSQL vector string format"""
+            return '[' + ','.join(map(str, embedding)) + ']'
+        
+        # Prepare batch insert with proper vector formatting
         insert_query = """
             INSERT INTO atabot.embeddings 
             (id, schema_name, table_name, content, embedding, metadata, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, NOW())
+            VALUES ($1, $2, $3, $4, $5::vector, $6, NOW())
             ON CONFLICT (id) DO UPDATE SET
                 content = EXCLUDED.content,
                 embedding = EXCLUDED.embedding,
@@ -399,7 +404,7 @@ class SyncService:
                 updated_at = NOW()
         """
         
-        # Batch insert
+        # Batch insert with formatted vectors
         batch_data = []
         for i in range(len(ids)):
             batch_data.append((
@@ -407,7 +412,7 @@ class SyncService:
                 schema,
                 table,
                 texts[i],
-                embeddings[i],  # pgvector handles list -> vector conversion
+                format_vector(embeddings[i]),  # Convert to string format for pgvector
                 json.dumps(metadata_list[i])
             ))
         
@@ -522,16 +527,26 @@ class SyncService:
         
         return patterns
     
-    async def sync_schema(
+    async def sync_schema_with_job_id(
         self,
+        job_id: str,
         schema: str,
         tables: Optional[List[str]] = None,
         mode: str = "incremental"
     ) -> Dict[str, Any]:
         """
-        Sync entire schema or specific tables
+        Sync entire schema with pre-generated job_id
         """
-        logger.info(f"Starting schema sync for {schema}")
+        logger.info(f"Starting schema sync for {schema} with job_id: {job_id}")
+        
+        # Register main job
+        self.active_jobs[job_id] = {
+            "status": "running",
+            "started_at": datetime.now().isoformat(),
+            "schema": schema,
+            "mode": mode,
+            "type": "schema_sync"
+        }
         
         # Get tables to sync
         if not tables:
@@ -543,20 +558,39 @@ class SyncService:
         
         for table in tables:
             try:
-                result = await self.sync_table(schema, table, mode)
+                # Create sub-job for each table
+                sub_job_id = f"{job_id}_{table}"
+                result = await self.sync_table_with_job_id(sub_job_id, schema, table, mode)
                 results[table] = result
             except Exception as e:
                 logger.error(f"Failed to sync {schema}.{table}: {e}")
                 failed.append(table)
                 results[table] = {"status": "failed", "error": str(e)}
         
-        return {
+        # Update main job
+        self.active_jobs[job_id]["status"] = "completed" if not failed else "partial"
+        self.active_jobs[job_id]["completed_at"] = datetime.now().isoformat()
+        self.active_jobs[job_id]["result"] = {
             "schema": schema,
             "tables_synced": len(tables) - len(failed),
             "tables_failed": len(failed),
             "failed_tables": failed,
             "results": results
         }
+        
+        return self.active_jobs[job_id]["result"]
+    
+    async def sync_schema(
+        self,
+        schema: str,
+        tables: Optional[List[str]] = None,
+        mode: str = "incremental"
+    ) -> Dict[str, Any]:
+        """
+        Sync entire schema or specific tables (backward compatibility)
+        """
+        job_id = str(uuid.uuid4())
+        return await self.sync_schema_with_job_id(job_id, schema, tables, mode)
     
     async def enable_realtime_sync(
         self,
