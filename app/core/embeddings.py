@@ -1,6 +1,6 @@
 """
-VoyageAI Embedding Service
-Lightweight API-based embedding generation - NO local models!
+VoyageAI Embedding Service with Rate Limiting
+Handles strict rate limits (3 RPM for free tier)
 """
 import voyageai
 from typing import List, Dict, Any
@@ -8,18 +8,64 @@ from loguru import logger
 import asyncio
 from tenacity import retry, stop_after_attempt, wait_exponential
 import hashlib
+import time
+from datetime import datetime, timedelta
 
 from .config import settings
 
+class RateLimiter:
+    """Simple rate limiter for API calls"""
+    
+    def __init__(self, max_requests: int = 3, window_seconds: int = 60):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.requests = []
+    
+    async def wait_if_needed(self):
+        """Wait if rate limit would be exceeded"""
+        now = datetime.now()
+        
+        # Clean old requests
+        self.requests = [
+            req_time for req_time in self.requests 
+            if (now - req_time).total_seconds() < self.window_seconds
+        ]
+        
+        # Check if we need to wait
+        if len(self.requests) >= self.max_requests:
+            # Calculate wait time
+            oldest_request = min(self.requests)
+            wait_time = self.window_seconds - (now - oldest_request).total_seconds()
+            
+            if wait_time > 0:
+                logger.warning(f"Rate limit reached, waiting {wait_time:.1f} seconds...")
+                await asyncio.sleep(wait_time + 1)  # Add 1 second buffer
+                
+                # Clean again after waiting
+                now = datetime.now()
+                self.requests = [
+                    req_time for req_time in self.requests 
+                    if (now - req_time).total_seconds() < self.window_seconds
+                ]
+        
+        # Record this request
+        self.requests.append(now)
+
 class EmbeddingService:
-    """VoyageAI API client for generating embeddings"""
+    """VoyageAI API client for generating embeddings with rate limiting"""
     
     def __init__(self):
         """Initialize VoyageAI client"""
         self.client = voyageai.Client(api_key=settings.VOYAGE_API_KEY)
         self.model = settings.VOYAGE_MODEL
         self.dimensions = settings.EMBEDDING_DIMENSIONS
-        self.batch_size = settings.EMBEDDING_BATCH_SIZE
+        
+        # Reduced batch size for rate limiting
+        # With 3 RPM limit, we need to be very conservative
+        self.batch_size = min(settings.EMBEDDING_BATCH_SIZE, 10)  # Max 10 texts per request
+        
+        # Rate limiter: 3 requests per minute for free tier
+        self.rate_limiter = RateLimiter(max_requests=2, window_seconds=60)  # Even more conservative: 2 RPM
         
         # Simple in-memory cache for embeddings
         self._cache: Dict[str, List[float]] = {}
@@ -32,7 +78,7 @@ class EmbeddingService:
     
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10)
+        wait=wait_exponential(multiplier=2, min=10, max=30)  # Longer waits between retries
     )
     async def generate_embedding(
         self, 
@@ -40,7 +86,7 @@ class EmbeddingService:
         input_type: str = "document"
     ) -> List[float]:
         """
-        Generate embedding for a single text
+        Generate embedding for a single text with rate limiting
         
         Args:
             text: Text to embed
@@ -65,6 +111,9 @@ class EmbeddingService:
             text = text[:max_length]
         
         try:
+            # Apply rate limiting
+            await self.rate_limiter.wait_if_needed()
+            
             # VoyageAI's client is synchronous, so we run it in executor
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
@@ -85,6 +134,11 @@ class EmbeddingService:
             return embedding
             
         except Exception as e:
+            if "rate limit" in str(e).lower():
+                logger.error(f"Rate limit hit: {e}")
+                # Wait longer before retry
+                await asyncio.sleep(30)
+                raise
             logger.error(f"Failed to generate embedding: {e}")
             raise
     
@@ -95,7 +149,7 @@ class EmbeddingService:
         show_progress: bool = True
     ) -> List[List[float]]:
         """
-        Generate embeddings for multiple texts in batches
+        Generate embeddings for multiple texts with aggressive rate limiting
         
         Args:
             texts: List of texts to embed
@@ -115,9 +169,17 @@ class EmbeddingService:
         
         all_embeddings = [None] * len(texts)
         
-        # Process in batches
-        for batch_start in range(0, len(valid_texts), self.batch_size):
-            batch_end = min(batch_start + self.batch_size, len(valid_texts))
+        # Use much smaller batches due to rate limiting
+        # With 2 RPM, we need to process very slowly
+        micro_batch_size = min(self.batch_size, 5)  # Max 5 texts per request
+        
+        total_batches = (len(valid_texts) + micro_batch_size - 1) // micro_batch_size
+        
+        logger.info(f"Processing {len(valid_texts)} texts in {total_batches} batches (rate limited to 2 RPM)")
+        
+        # Process in micro-batches with rate limiting
+        for batch_num, batch_start in enumerate(range(0, len(valid_texts), micro_batch_size)):
+            batch_end = min(batch_start + micro_batch_size, len(valid_texts))
             batch_indices_texts = valid_texts[batch_start:batch_end]
             batch_texts = [text for _, text in batch_indices_texts]
             
@@ -137,6 +199,9 @@ class EmbeddingService:
                 
                 # Generate embeddings for uncached texts
                 if uncached_texts:
+                    # Apply rate limiting
+                    await self.rate_limiter.wait_if_needed()
+                    
                     loop = asyncio.get_event_loop()
                     response = await loop.run_in_executor(
                         None,
@@ -160,11 +225,21 @@ class EmbeddingService:
                 
                 if show_progress:
                     progress = min(batch_end, len(valid_texts))
-                    logger.info(f"Processed {progress}/{len(valid_texts)} embeddings")
+                    percent = (progress / len(valid_texts)) * 100
+                    logger.info(f"Batch {batch_num + 1}/{total_batches}: Processed {progress}/{len(valid_texts)} embeddings ({percent:.1f}%)")
                     
             except Exception as e:
-                logger.error(f"Failed to generate batch embeddings: {e}")
-                raise
+                if "rate limit" in str(e).lower():
+                    logger.error(f"Rate limit hit on batch {batch_num + 1}: {e}")
+                    # Wait significant time before continuing
+                    logger.info("Waiting 60 seconds before retrying...")
+                    await asyncio.sleep(60)
+                    # Retry this batch
+                    batch_num -= 1
+                    continue
+                else:
+                    logger.error(f"Failed to generate batch embeddings: {e}")
+                    raise
         
         # Fill in empty embeddings with zeros (for empty texts)
         for i in range(len(all_embeddings)):

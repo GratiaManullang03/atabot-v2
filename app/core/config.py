@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     VOYAGE_MODEL: str = "voyage-3.5-lite"
     VOYAGE_INPUT_TYPE: str = "document"  # 'document' or 'query'
     EMBEDDING_DIMENSIONS: int = 1024
-    EMBEDDING_BATCH_SIZE: int = 100
+    EMBEDDING_BATCH_SIZE: int = 5
     
     # LLM Configuration
     POE_API_KEY: str
@@ -39,11 +39,15 @@ class Settings(BaseSettings):
     LLM_TIMEOUT: int = 30
     
     # Performance Settings
-    SYNC_BATCH_SIZE: int = 1000
-    SYNC_MAX_WORKERS: int = 4
+    SYNC_BATCH_SIZE: int = 10
+    SYNC_MAX_WORKERS: int = 1
     VECTOR_SEARCH_LIMIT: int = 10
-    MAX_CONCURRENT_REQUESTS: int = 50
+    MAX_CONCURRENT_REQUESTS: int = 5
     QUERY_TIMEOUT: int = 30
+
+    # Rate Limiting Settings (NEW)
+    VOYAGE_RATE_LIMIT_RPM: int = 2
+    VOYAGE_RATE_LIMIT_DELAY: int = 30
     
     # Feature Flags
     ENABLE_STREAMING: bool = True
@@ -53,8 +57,8 @@ class Settings(BaseSettings):
     ENABLE_HYBRID_SEARCH: bool = True
     
     # Cache Settings
-    CACHE_TTL: int = 3600  # 1 hour
-    CACHE_MAX_SIZE: int = 1000
+    CACHE_TTL: int = 7200  # 1 hour
+    CACHE_MAX_SIZE: int = 5000
     REDIS_URL: Optional[str] = None  # Optional Redis for distributed cache
     
     # Security
