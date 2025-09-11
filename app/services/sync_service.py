@@ -580,6 +580,65 @@ class SyncService:
         
         return self.active_jobs[job_id]["result"]
     
+    async def sync_table_with_job_id(
+        self,
+        job_id: str,
+        schema: str,
+        table: str,
+        mode: str = "incremental"
+    ) -> Dict[str, Any]:
+        """
+        Sync a table to vector store with pre-generated job_id
+        
+        Args:
+            job_id: Pre-generated job ID
+            schema: Schema name
+            table: Table name
+            mode: 'full' for complete resync, 'incremental' for changes only
+            
+        Returns:
+            Sync result with statistics
+        """
+        start_time = datetime.now()
+        
+        # Register job with provided job_id
+        self.active_jobs[job_id] = {
+            "status": "running",
+            "started_at": start_time.isoformat(),
+            "schema": schema,
+            "table": table,
+            "mode": mode
+        }
+        
+        try:
+            logger.info(f"Starting {mode} sync for {schema}.{table} with job_id: {job_id}")
+            
+            # Get table info
+            table_info = await db_pool.get_table_info(schema, table)
+            if not table_info:
+                raise ValueError(f"Table {schema}.{table} not found")
+            
+            # Check if sync tracking exists
+            await self._ensure_sync_tracking(schema, table)
+            
+            if mode == "incremental":
+                result = await self._incremental_sync(schema, table, table_info)
+            else:
+                result = await self._full_sync(schema, table, table_info)
+            
+            # Update job status
+            self.active_jobs[job_id]["status"] = "completed"
+            self.active_jobs[job_id]["completed_at"] = datetime.now().isoformat()
+            self.active_jobs[job_id]["result"] = result
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Sync failed for {schema}.{table}: {e}")
+            self.active_jobs[job_id]["status"] = "failed"
+            self.active_jobs[job_id]["error"] = str(e)
+            raise
+    
     async def sync_schema(
         self,
         schema: str,
