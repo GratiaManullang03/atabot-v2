@@ -12,9 +12,7 @@ from decimal import Decimal
 import uuid
 
 from app.core.database import db_pool
-from app.core.embeddings import embedding_service
 from app.core.config import settings
-from app.services.embedding_queue import embedding_queue
 
 def quote_ident(name: str) -> str:
     """
@@ -855,6 +853,101 @@ class SyncService:
             {"job_id": job_id, **job_data}
             for job_id, job_data in self.active_jobs.items()
         ]
+    
+    async def _process_embeddings(
+        self,
+        schema: str,
+        table: str,
+        ids: List[str],
+        texts: List[str],
+        metadata_list: List[Dict[str, Any]]
+    ) -> None:
+        """
+        Generate and store embeddings for texts - FIXED VERSION
+        """
+        if not texts:
+            return
+        
+        logger.info(f"Processing {len(texts)} embeddings for {schema}.{table}")
+        
+        # Import the embedding queue
+        from app.services.embedding_queue import embedding_queue
+        
+        # Add to queue and get batch ID
+        batch_id = await embedding_queue.add_batch(texts, metadata_list)
+        logger.info(f"Added batch {batch_id} to embedding queue ({len(texts)} texts)")
+        
+        # Wait for batch to complete processing
+        success = await embedding_queue.wait_for_batch(batch_id, timeout=300)
+        
+        if not success:
+            logger.error(f"Batch {batch_id} failed or timed out")
+            # Fallback: try to get whatever embeddings are available
+        
+        # Get embeddings from cache (whether success or not)
+        embeddings = embedding_queue.get_embeddings_for_batch(batch_id, texts)
+        
+        # Handle any missing embeddings
+        final_embeddings = []
+        failed_count = 0
+        
+        for i, embedding in enumerate(embeddings):
+            if embedding is None or len(embedding) == 0:
+                # Log the failure
+                logger.error(f"No embedding for text {i}: {texts[i][:100]}...")
+                failed_count += 1
+                
+                # Fallback strategy: Try to generate individually (last resort)
+                try:
+                    from app.core.embeddings import embedding_service
+                    individual_embedding = await embedding_service.generate_embedding(
+                        texts[i], 
+                        input_type="document"
+                    )
+                    if individual_embedding and len(individual_embedding) > 0:
+                        final_embeddings.append(individual_embedding)
+                        # Also cache it
+                        text_hash = hashlib.md5(texts[i].encode()).hexdigest()
+                        embedding_queue.cache[text_hash] = individual_embedding
+                    else:
+                        # Ultimate fallback: zero vector (but log it as critical)
+                        logger.critical(f"Using zero vector for row {ids[i]} in {schema}.{table}")
+                        final_embeddings.append([0.0] * settings.EMBEDDING_DIMENSIONS)
+                except Exception as e:
+                    logger.critical(f"Failed to generate individual embedding: {e}")
+                    # Use zero vector as last resort
+                    final_embeddings.append([0.0] * settings.EMBEDDING_DIMENSIONS)
+            else:
+                # Valid embedding
+                final_embeddings.append(embedding)
+        
+        if failed_count > 0:
+            logger.warning(f"Failed to generate {failed_count}/{len(texts)} embeddings, used fallback")
+        
+        # Validate embeddings before storing
+        valid_count = sum(1 for emb in final_embeddings if any(v != 0 for v in emb))
+        if valid_count == 0:
+            logger.critical(f"ALL embeddings are zero vectors for {schema}.{table}!")
+            # This is a critical issue - might want to raise an exception or alert
+        else:
+            logger.info(f"Storing {valid_count}/{len(final_embeddings)} valid embeddings")
+        
+        # Store embeddings
+        await self._store_embeddings(
+            schema, table, ids, texts, final_embeddings, metadata_list
+        )
+
+    # Additional helper method to check embedding validity
+    def validate_embedding(embedding: List[float]) -> bool:
+        """Check if an embedding is valid (not all zeros)"""
+        if not embedding or len(embedding) == 0:
+            return False
+        
+        # Check if at least some values are non-zero
+        non_zero_count = sum(1 for v in embedding if v != 0)
+        
+        # At least 10% should be non-zero for a valid embedding
+        return non_zero_count > len(embedding) * 0.1
 
 # Global sync service instance
 sync_service = SyncService()
