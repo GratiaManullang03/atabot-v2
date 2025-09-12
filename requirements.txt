@@ -2,6 +2,7 @@
 fastapi==0.110.0
 uvicorn[standard]==0.27.1
 python-dotenv==1.0.1
+numpy==2.3.3
 
 # Database - Async PostgreSQL + pgvector
 asyncpg==0.29.0
@@ -15,10 +16,12 @@ httpx==0.26.0
 pydantic==2.11.7
 pydantic-settings==2.1.0
 orjson==3.11.3
+aiofiles==23.2.1
 tenacity==8.2.3
 
 # Monitoring & Logging
 loguru==0.7.2
+psutil==5.9.8
 
 # SSE Support
 sse-starlette==2.0.0

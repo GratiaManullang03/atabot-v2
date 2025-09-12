@@ -82,7 +82,7 @@ class PoeClient:
 
         # Track metrics
         from app.core.metrics import usage_tracker
-        usage_tracker.log_api_call('voyage')
+        usage_tracker.log_api_call('poe')
         
         try:
             response = await self.client.post(

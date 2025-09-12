@@ -14,3 +14,5 @@ htmlcov/
 .pytest_cache/
 .mypy_cache/
 *.db
+*.bak
+*.backup
