@@ -79,6 +79,10 @@ class PoeClient:
             "max_tokens": max_tokens or settings.LLM_MAX_TOKENS,
             "temperature": temperature or settings.LLM_TEMPERATURE
         }
+
+        # Track metrics
+        from app.core.metrics import usage_tracker
+        usage_tracker.log_api_call('voyage')
         
         try:
             response = await self.client.post(

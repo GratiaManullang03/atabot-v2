@@ -19,6 +19,7 @@ from app.services.sql_generator import sql_generator
 from app.services.answer_generator import answer_generator
 from app.schemas.chat_models import ChatRequest, ChatResponse
 from app.core.database import db_pool
+from app.services.smart_router import smart_router
 
 router = APIRouter()
 
@@ -139,30 +140,38 @@ class ChatOrchestrator:
     ) -> Dict[str, Any]:
         """Process query using SQL generation"""
         
-        # Generate SQL
-        sql_result = await sql_generator.generate_sql(
-            query,
+        # TRY SMART ROUTER FIRST!
+        sql = smart_router.generate_sql_without_llm(
+            query, 
             schema,
-            context={'intent': intent}
+            intent.get('target_table')
         )
         
-        # Execute SQL
-        exec_result = await sql_generator.execute_sql(
-            sql_result['sql'],
-            schema
-        )
+        if sql:
+            # No LLM needed!
+            logger.info(f"Used smart router for SQL: {sql}")
+            exec_result = await sql_generator.execute_sql(sql, schema)
+        else:
+            # Fallback to LLM
+            sql_result = await sql_generator.generate_sql(
+                query,
+                schema,
+                context={'intent': intent}
+            )
+            sql = sql_result['sql']
+            exec_result = await sql_generator.execute_sql(sql, schema)
         
-        # Generate answer from results
+        # Generate answer
         answer = await answer_generator.generate_answer(
             query,
             exec_result,
-            context={'intent': intent, 'sql': sql_result['sql']}
+            context={'intent': intent, 'sql': sql}
         )
         
         return {
             "answer": answer,
             "sources": exec_result.get('rows', [])[:5],
-            "sql": sql_result['sql']
+            "sql": sql
         }
     
     async def _process_hybrid_search(

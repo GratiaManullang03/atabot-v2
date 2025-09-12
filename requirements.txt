@@ -15,17 +15,10 @@ httpx==0.26.0
 pydantic==2.11.7
 pydantic-settings==2.1.0
 orjson==3.11.3
-python-multipart==0.0.9
-aiofiles==23.2.1
 tenacity==8.2.3
-
-# Authentication (simplified)
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
 
 # Monitoring & Logging
 loguru==0.7.2
-psutil==5.9.8
 
 # SSE Support
 sse-starlette==2.0.0

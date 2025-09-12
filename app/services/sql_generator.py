@@ -27,18 +27,38 @@ class SQLGenerator:
         allow_complex: bool = True
     ) -> Dict[str, Any]:
         """
-        Generate SQL query from natural language
-        
-        Args:
-            natural_query: Natural language query
-            schema: Target schema name
-            context: Additional context (table info, relationships, etc.)
-            allow_complex: Whether to allow complex queries (JOINs, subqueries)
-            
-        Returns:
-            Dictionary with SQL query and metadata
+        Generate SQL with smart routing
         """
         try:
+            logger.info(f"Generating SQL for: {natural_query}")
+            
+            # TRY SMART ROUTER FIRST!
+            from app.services.smart_router import smart_router
+            
+            # Get schema info for table hint
+            schema_info = await self._get_schema_info(schema)
+            table_hint = self._identify_target_table(natural_query, schema_info)
+            
+            # Try generate without LLM
+            sql = smart_router.generate_sql_without_llm(
+                natural_query, 
+                schema, 
+                table_hint
+            )
+            
+            if sql:
+                logger.info("SQL generated WITHOUT LLM!")
+                return {
+                    "sql": sql,
+                    "intent": {"type": "simple"},
+                    "schema": schema,
+                    "confidence": 0.9,
+                    "explanation": "Query processed without LLM",
+                    "llm_used": False  # Track this!
+                }
+            
+            # If smart router can't handle, continue with existing LLM logic
+            logger.info("Complex query, using LLM...")
             logger.info(f"Generating SQL for: {natural_query}")
             
             # Get schema information

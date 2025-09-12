@@ -14,6 +14,7 @@ import uuid
 from app.core.database import db_pool
 from app.core.embeddings import embedding_service
 from app.core.config import settings
+from app.services.embedding_queue import embedding_queue
 
 def quote_ident(name: str) -> str:
     """
@@ -399,15 +400,15 @@ class SyncService:
         table_info: List[Dict[str, Any]]
     ) -> None:
         """
-        Process a batch of rows to generate embeddings
+        Process a batch of rows using embedding queue
         """
         if not rows:
             return
         
-        # Get learned patterns for this table
+        # Get learned patterns
         patterns = await self._get_learned_patterns(schema, table)
         
-        # Prepare texts for embedding
+        # Prepare texts and metadata
         texts = []
         metadata_list = []
         ids = []
@@ -415,35 +416,46 @@ class SyncService:
         pk_column = self._get_primary_key(table_info)
         
         for row in rows:
-            # Convert row to dict
             row_dict = dict(row)
-            
-            # Generate searchable text
             text = self._generate_searchable_text(row_dict, table, patterns)
             texts.append(text)
             
-            # Prepare metadata (sanitize for JSON)
             metadata = self._sanitize_metadata(row_dict)
             metadata['_schema'] = schema
             metadata['_table'] = table
             metadata_list.append(metadata)
             
-            # Generate ID
             if pk_column and pk_column in row_dict:
                 row_id = f"{schema}_{table}_{row_dict[pk_column]}"
             else:
-                # Use hash of content as ID
                 row_id = hashlib.md5(f"{schema}_{table}_{text}".encode()).hexdigest()
             ids.append(row_id)
         
-        # Generate embeddings
-        embeddings = await embedding_service.generate_batch_embeddings(
-            texts,
-            input_type="document",
-            show_progress=False
-        )
+        # USE EMBEDDING QUEUE instead of direct call!
+        from app.services.embedding_queue import embedding_queue
         
-        # Store embeddings in database
+        # Add to queue
+        batch_id = await embedding_queue.add_batch(texts, metadata_list)
+        logger.info(f"Added batch {batch_id} to embedding queue ({len(texts)} texts)")
+        
+        # Wait for processing (optional, atau bisa async)
+        # Untuk sync operation, kita tunggu selesai
+        while batch_id in embedding_queue.queue:
+            await asyncio.sleep(1)
+        
+        # Get embeddings from cache
+        embeddings = []
+        for text in texts:
+            text_hash = hashlib.md5(text.encode()).hexdigest()
+            embedding = embedding_queue.cache.get(text_hash)
+            if embedding:
+                embeddings.append(embedding)
+            else:
+                # Fallback jika tidak ada di cache
+                logger.warning(f"Embedding not found in cache for text hash: {text_hash}")
+                embeddings.append([0.0] * settings.EMBEDDING_DIMENSIONS)
+        
+        # Store embeddings
         await self._store_embeddings(
             schema, table, ids, texts, embeddings, metadata_list
         )

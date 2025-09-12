@@ -59,7 +59,7 @@ class EmbeddingService:
         self.model = settings.VOYAGE_MODEL
         self.dimensions = settings.EMBEDDING_DIMENSIONS
 
-        self.batch_size = 120
+        self.batch_size = min(settings.EMBEDDING_BATCH_SIZE, 120)
                 
         # Rate limiter: 2 requests per minute for free tier
         self.rate_limiter = RateLimiter(max_requests=2, window_seconds=60)  # Even more conservative: 2 RPM
@@ -106,6 +106,10 @@ class EmbeddingService:
         if len(text) > max_length:
             logger.warning(f"Text truncated from {len(text)} to {max_length} characters")
             text = text[:max_length]
+
+        # Track metrics
+        from app.core.metrics import usage_tracker
+        usage_tracker.log_api_call('voyage')
         
         try:
             # Apply rate limiting
@@ -168,7 +172,7 @@ class EmbeddingService:
         
         # Use much smaller batches due to rate limiting
         # With 2 RPM, we need to process very slowly
-        micro_batch_size = min(self.batch_size, 5)  # Max 5 texts per request
+        micro_batch_size = min(self.batch_size, len(valid_texts))
         
         total_batches = (len(valid_texts) + micro_batch_size - 1) // micro_batch_size
         
