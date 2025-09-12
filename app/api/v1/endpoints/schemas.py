@@ -253,6 +253,18 @@ async def get_schema_statistics(schema_name: str):
         
         query_stats = await db_pool.fetchrow(query_stats_query)
         
+        # Handle learned_patterns safely (JSONB is already parsed)
+        learned_patterns = schema_info["learned_patterns"]
+        if learned_patterns and isinstance(learned_patterns, str):
+            # Only parse if it's a string
+            import json
+            try:
+                learned_patterns = json.loads(learned_patterns)
+            except json.JSONDecodeError:
+                learned_patterns = {}
+        elif not learned_patterns:
+            learned_patterns = {}
+        
         return {
             "success": True,
             "schema": schema_name,
@@ -262,18 +274,18 @@ async def get_schema_statistics(schema_name: str):
                 "total_tables": schema_info["total_tables"],
                 "total_rows": schema_info["total_rows"],
                 "is_active": schema_info["is_active"],
-                "discovered_at": schema_info["discovered_at"],
+                "discovered_at": schema_info.get("discovered_at"),
                 "last_synced_at": schema_info["last_synced_at"]
             },
             "embeddings": dict(embedding_stats) if embedding_stats else {},
             "queries": dict(query_stats) if query_stats else {},
-            "learned_patterns": schema_info["learned_patterns"]
+            "learned_patterns": learned_patterns
         }
         
     except Exception as e:
         logger.error(f"Failed to get statistics for schema {schema_name}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
+    
 @router.delete("/{schema_name}")
 async def deactivate_schema(schema_name: str):
     """

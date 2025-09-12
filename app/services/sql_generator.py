@@ -192,9 +192,31 @@ class SQLGenerator:
                           for t in tables}
             }
         else:
-            schema_info = json.loads(result['metadata']) if result['metadata'] else {}
-            if result['learned_patterns']:
-                schema_info['patterns'] = json.loads(result['learned_patterns'])
+            # JSONB columns are already parsed by asyncpg
+            metadata = result['metadata']
+            learned_patterns = result['learned_patterns']
+            
+            # Handle both dict and string formats for safety
+            if isinstance(metadata, str):
+                import json
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    metadata = {}
+            
+            schema_info = metadata if metadata else {}
+            
+            # Add learned patterns if available
+            if learned_patterns:
+                if isinstance(learned_patterns, str):
+                    import json
+                    try:
+                        learned_patterns = json.loads(learned_patterns)
+                    except json.JSONDecodeError:
+                        learned_patterns = {}
+                
+                if isinstance(learned_patterns, dict):
+                    schema_info['patterns'] = learned_patterns
         
         # Get foreign keys for relationships
         foreign_keys = await db_pool.get_foreign_keys(schema)

@@ -688,9 +688,15 @@ class SyncService:
         patterns = {}
         
         # Extract table-specific patterns
-        if result['metadata']:
+        # JSONB columns are already parsed by asyncpg
+        metadata = result['metadata']
+        learned_patterns = result['learned_patterns']
+        
+        if metadata:
             try:
-                metadata = json.loads(result['metadata']) if isinstance(result['metadata'], str) else result['metadata']
+                # Handle both dict and string formats for safety
+                if isinstance(metadata, str):
+                    metadata = json.loads(metadata)
                 
                 # Check if metadata contains the table
                 if isinstance(metadata, dict) and table in metadata:
@@ -707,9 +713,13 @@ class SyncService:
                 patterns = {}
         
         # Add learned patterns
-        if result['learned_patterns']:
+        if learned_patterns:
             try:
-                learned = json.loads(result['learned_patterns']) if isinstance(result['learned_patterns'], str) else result['learned_patterns']
+                # Handle both dict and string formats for safety
+                if isinstance(learned_patterns, str):
+                    learned = json.loads(learned_patterns)
+                else:
+                    learned = learned_patterns
                 
                 if isinstance(learned, dict):
                     # Safely merge terminology if it exists
