@@ -1,7 +1,5 @@
-# app/api/v1/endpoints/chat.py
 """
 Chat API Endpoints - Main interface for querying data
-Complete implementation with streaming support
 """
 from fastapi import APIRouter, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse

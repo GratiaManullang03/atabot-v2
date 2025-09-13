@@ -2,7 +2,7 @@
 Embedding Queue Service
 """
 import asyncio
-from typing import List, Dict
+from typing import List, Dict, Optional
 from collections import deque
 from datetime import datetime
 from loguru import logger
@@ -24,12 +24,13 @@ class EmbeddingQueue:
         
     async def add_batch(self, texts: List[str], metadata: List[Dict]) -> str:
         """Add texts to queue and return batch ID"""
-        batch_id = hashlib.md5(str(datetime.now()).encode()).hexdigest()
+        batch_id = hashlib.md5(f"{datetime.now().isoformat()}_{len(texts)}".encode()).hexdigest()
         
-        # Deduplicate texts
+        # Prepare batch data
+        text_hashes = []
         unique_texts = []
         unique_metadata = []
-        text_hashes = []
+        unique_hashes = []
         
         for text, meta in zip(texts, metadata):
             text_hash = hashlib.md5(text.encode()).hexdigest()
@@ -39,6 +40,7 @@ class EmbeddingQueue:
             if text_hash not in self.cache:
                 unique_texts.append(text)
                 unique_metadata.append(meta)
+                unique_hashes.append(text_hash)
         
         # Track batch status
         self.batch_status[batch_id] = 'pending'
@@ -50,11 +52,12 @@ class EmbeddingQueue:
         }
         
         if unique_texts:
+            # Add to queue
             self.queue.append({
                 'batch_id': batch_id,
                 'texts': unique_texts,
                 'metadata': unique_metadata,
-                'text_hashes': [hashlib.md5(t.encode()).hexdigest() for t in unique_texts],
+                'text_hashes': unique_hashes,
                 'added_at': datetime.now()
             })
             
@@ -78,6 +81,7 @@ class EmbeddingQueue:
             status = self.batch_status.get(batch_id, 'unknown')
             
             if status == 'completed':
+                logger.info(f"Batch {batch_id} completed successfully")
                 return True
             elif status == 'failed':
                 logger.error(f"Batch {batch_id} failed")
@@ -92,26 +96,25 @@ class EmbeddingQueue:
         logger.error(f"Batch {batch_id} timed out after {timeout} seconds")
         return False
     
-    def get_embeddings_for_batch(self, batch_id: str, texts: List[str]) -> List[List[float]]:
+    def get_embeddings_for_batch(self, batch_id: str, texts: List[str]) -> List[Optional[List[float]]]:
         """Get embeddings for a batch of texts"""
         embeddings = []
         
         for text in texts:
             text_hash = hashlib.md5(text.encode()).hexdigest()
             embedding = self.cache.get(text_hash)
-            
-            if embedding is not None:
-                embeddings.append(embedding)
-            else:
-                logger.warning(f"Embedding not found for text hash: {text_hash}")
-                # Return None instead of zeros - let caller decide fallback
-                embeddings.append(None)
+            embeddings.append(embedding)  # Can be None if not found
         
         return embeddings
     
     async def _process_queue(self):
         """Process queue with rate limiting and proper error handling"""
+        if self.processing:
+            logger.warning("Queue processing already in progress")
+            return
+            
         self.processing = True
+        logger.info("Starting queue processing")
         
         try:
             while self.queue:
@@ -121,8 +124,15 @@ class EmbeddingQueue:
                 batch_ids = []
                 batch_hashes = []
                 
+                # Collect texts from multiple batches if needed
                 while self.queue and len(batch_texts) < 120:
-                    if len(self.queue[0]['texts']) + len(batch_texts) <= 120:
+                    batch = self.queue[0]
+                    
+                    # Calculate how many texts we can take from this batch
+                    can_take = min(120 - len(batch_texts), len(batch['texts']))
+                    
+                    if can_take == len(batch['texts']):
+                        # Take entire batch
                         batch = self.queue.popleft()
                         batch_texts.extend(batch['texts'])
                         batch_metadata.extend(batch['metadata'])
@@ -132,68 +142,55 @@ class EmbeddingQueue:
                         # Update status to processing
                         self.batch_status[batch['batch_id']] = 'processing'
                     else:
-                        # Partial batch processing
-                        remaining = 120 - len(batch_texts)
-                        batch = self.queue[0]
-                        batch_texts.extend(batch['texts'][:remaining])
-                        batch_metadata.extend(batch['metadata'][:remaining])
-                        batch_hashes.extend(batch['text_hashes'][:remaining])
+                        # Take partial batch
+                        batch_texts.extend(batch['texts'][:can_take])
+                        batch_metadata.extend(batch['metadata'][:can_take])
+                        batch_hashes.extend(batch['text_hashes'][:can_take])
                         
                         # Update queue with remaining
-                        batch['texts'] = batch['texts'][remaining:]
-                        batch['metadata'] = batch['metadata'][remaining:]
-                        batch['text_hashes'] = batch['text_hashes'][remaining:]
+                        batch['texts'] = batch['texts'][can_take:]
+                        batch['metadata'] = batch['metadata'][can_take:]
+                        batch['text_hashes'] = batch['text_hashes'][can_take:]
                         
                         # Mark batch as partially processing
-                        self.batch_status[batch['batch_id']] = 'processing'
+                        if batch['batch_id'] not in batch_ids:
+                            self.batch_status[batch['batch_id']] = 'processing'
+                            batch_ids.append(batch['batch_id'])
                         break
                 
                 if batch_texts:
-                    logger.info(f"Processing {len(batch_texts)} texts in ONE request")
+                    logger.info(f"Processing {len(batch_texts)} texts in batch")
                     
                     try:
-                        # Generate embeddings (single API call!)
-                        embeddings = await embedding_service.generate_batch_embeddings(
-                            batch_texts,
-                            input_type="document",
-                            show_progress=False
-                        )
+                        # Generate embeddings with retry logic
+                        embeddings = await self._generate_embeddings_with_retry(batch_texts)
                         
-                        # Validate embeddings
-                        if not embeddings:
-                            raise ValueError(f"Failed to generate any embeddings")
-                        
-                        # Store results in cache
+                        # Store embeddings in cache
                         successful = 0
-                        failed_texts = []
+                        failed = 0
                         
-                        for i, (text_hash, embedding) in enumerate(zip(batch_hashes, embeddings)):
-                            if embedding is not None and len(embedding) > 0:
-                                # Additional validation
+                        for text_hash, embedding in zip(batch_hashes, embeddings):
+                            if embedding and len(embedding) > 0:
+                                # Validate embedding
                                 non_zero_count = sum(1 for v in embedding if v != 0)
-                                if non_zero_count > len(embedding) * 0.1:  # At least 10% non-zero
+                                if non_zero_count > len(embedding) * 0.1:
                                     self.cache[text_hash] = embedding
                                     successful += 1
                                 else:
-                                    logger.error(f"Invalid embedding (too many zeros) for hash {text_hash}")
-                                    failed_texts.append((text_hash, batch_texts[i]))
+                                    logger.warning(f"Invalid embedding (mostly zeros) for hash {text_hash}")
+                                    failed += 1
                             else:
-                                logger.error(f"No embedding generated for hash {text_hash}")
-                                failed_texts.append((text_hash, batch_texts[i] if i < len(batch_texts) else "unknown"))
+                                logger.warning(f"No embedding generated for hash {text_hash}")
+                                failed += 1
                         
-                        # Retry failed embeddings individually with longer wait
-                        if failed_texts and len(failed_texts) < 10:  # Only retry if few failures
-                            logger.info(f"Retrying {len(failed_texts)} failed embeddings individually...")
-                            for text_hash, text in failed_texts:
-                                try:
-                                    await asyncio.sleep(21)  # Wait between retries
-                                    embedding = await embedding_service.generate_embedding(text, "document")
-                                    if embedding and len(embedding) > 0:
-                                        self.cache[text_hash] = embedding
-                                        successful += 1
-                                        logger.info(f"Retry successful for hash {text_hash}")
-                                except Exception as e:
-                                    logger.error(f"Retry failed for hash {text_hash}: {e}")
+                        logger.info(f"Processed batch: {successful} successful, {failed} failed")
+                        
+                        # Update batch statuses
+                        for batch_id in batch_ids:
+                            # Check if all texts for this batch are processed
+                            if self._is_batch_complete(batch_id):
+                                self.batch_status[batch_id] = 'completed'
+                                logger.info(f"Batch {batch_id} completed")
                         
                     except Exception as e:
                         logger.error(f"Embedding generation failed: {e}")
@@ -202,7 +199,7 @@ class EmbeddingQueue:
                         for batch_id in batch_ids:
                             self.batch_status[batch_id] = 'failed'
                         
-                        # If rate limit error, wait longer
+                        # If rate limit error, wait before continuing
                         if "rate limit" in str(e).lower():
                             logger.warning("Rate limit hit, waiting 60 seconds...")
                             await asyncio.sleep(60)
@@ -212,11 +209,68 @@ class EmbeddingQueue:
                     
                     # Always wait between batches for rate limiting (free tier: 3 RPM)
                     # Wait 21 seconds to ensure we don't exceed 3 requests per minute
-                    await asyncio.sleep(21)
+                    if self.queue:  # Only wait if there are more items to process
+                        logger.info("Waiting 21 seconds for rate limit...")
+                        await asyncio.sleep(21)
                     
         finally:
             self.processing = False
             logger.info("Queue processing completed")
+    
+    async def _generate_embeddings_with_retry(
+        self, 
+        texts: List[str], 
+        max_retries: int = 3
+    ) -> List[Optional[List[float]]]:
+        """Generate embeddings with retry logic"""
+        for attempt in range(max_retries):
+            try:
+                # Use the embedding service to generate embeddings
+                embeddings = await embedding_service.generate_batch_embeddings(
+                    texts,
+                    input_type="document",
+                    show_progress=True
+                )
+                
+                # Check if we got valid embeddings
+                valid_count = sum(1 for e in embeddings if e is not None)
+                logger.info(f"Generated {valid_count}/{len(texts)} valid embeddings")
+                
+                return embeddings
+                
+            except Exception as e:
+                logger.error(f"Attempt {attempt + 1}/{max_retries} failed: {e}")
+                
+                if attempt < max_retries - 1:
+                    wait_time = min(30 * (2 ** attempt), 300)  # Exponential backoff
+                    logger.info(f"Retrying in {wait_time} seconds...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error("All retry attempts failed")
+                    # Return None for all texts
+                    return [None] * len(texts)
+        
+        return [None] * len(texts)
+    
+    def _is_batch_complete(self, batch_id: str) -> bool:
+        """Check if all texts for a batch have been processed"""
+        # Check if batch is still in queue
+        for batch in self.queue:
+            if batch['batch_id'] == batch_id:
+                return False  # Still has pending texts
+        
+        # Check if all text hashes have embeddings
+        batch_info = self.batch_results.get(batch_id, {})
+        text_hashes = batch_info.get('text_hashes', [])
+        
+        for text_hash in text_hashes:
+            if text_hash not in self.cache:
+                # Check if this was originally cached
+                if batch_info.get('cached', 0) > 0:
+                    continue  # Originally cached, skip check
+                return False  # Missing embedding
+        
+        return True
     
     def clear_cache(self):
         """Clear all caches"""
@@ -233,7 +287,8 @@ class EmbeddingQueue:
             'processing_batches': len([b for b in self.batch_status.values() if b == 'processing']),
             'completed_batches': len([b for b in self.batch_status.values() if b == 'completed']),
             'failed_batches': len([b for b in self.batch_status.values() if b == 'failed']),
-            'queue_size': len(self.queue)
+            'queue_size': len(self.queue),
+            'is_processing': self.processing
         }
 
 # Global queue instance

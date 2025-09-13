@@ -5,7 +5,6 @@ Uses schema understanding to generate accurate queries
 from typing import Dict, List, Any, Optional
 from loguru import logger
 import re
-import json
 
 from app.core.llm import llm_client
 from app.core.database import db_pool

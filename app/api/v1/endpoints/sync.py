@@ -1,6 +1,5 @@
 """
 Data Synchronization API Endpoints
-File: app/api/v1/endpoints/sync.py
 """
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from typing import Optional

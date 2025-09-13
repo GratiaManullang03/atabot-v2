@@ -3,7 +3,6 @@ Smart Query Router - Minimize LLM usage
 """
 from typing import Dict, Any, Optional
 import re
-from loguru import logger
 
 class SmartRouter:
     """
