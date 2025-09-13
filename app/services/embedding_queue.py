@@ -1,5 +1,5 @@
 """
-Embedding Queue Service - Fixed Version with Proper Batch Tracking
+Embedding Queue Service
 """
 import asyncio
 from typing import List, Dict
@@ -160,23 +160,40 @@ class EmbeddingQueue:
                         )
                         
                         # Validate embeddings
-                        if not embeddings or len(embeddings) != len(batch_texts):
-                            raise ValueError(f"Expected {len(batch_texts)} embeddings, got {len(embeddings) if embeddings else 0}")
+                        if not embeddings:
+                            raise ValueError(f"Failed to generate any embeddings")
                         
                         # Store results in cache
                         successful = 0
-                        for text_hash, embedding in zip(batch_hashes, embeddings):
-                            if embedding and len(embedding) > 0 and any(v != 0 for v in embedding):
-                                self.cache[text_hash] = embedding
-                                successful += 1
+                        failed_texts = []
+                        
+                        for i, (text_hash, embedding) in enumerate(zip(batch_hashes, embeddings)):
+                            if embedding is not None and len(embedding) > 0:
+                                # Additional validation
+                                non_zero_count = sum(1 for v in embedding if v != 0)
+                                if non_zero_count > len(embedding) * 0.1:  # At least 10% non-zero
+                                    self.cache[text_hash] = embedding
+                                    successful += 1
+                                else:
+                                    logger.error(f"Invalid embedding (too many zeros) for hash {text_hash}")
+                                    failed_texts.append((text_hash, batch_texts[i]))
                             else:
-                                logger.warning(f"Invalid embedding for hash {text_hash}: all zeros or empty")
+                                logger.error(f"No embedding generated for hash {text_hash}")
+                                failed_texts.append((text_hash, batch_texts[i] if i < len(batch_texts) else "unknown"))
                         
-                        logger.info(f"Successfully cached {successful}/{len(embeddings)} embeddings")
-                        
-                        # Mark batches as completed
-                        for batch_id in batch_ids:
-                            self.batch_status[batch_id] = 'completed'
+                        # Retry failed embeddings individually with longer wait
+                        if failed_texts and len(failed_texts) < 10:  # Only retry if few failures
+                            logger.info(f"Retrying {len(failed_texts)} failed embeddings individually...")
+                            for text_hash, text in failed_texts:
+                                try:
+                                    await asyncio.sleep(21)  # Wait between retries
+                                    embedding = await embedding_service.generate_embedding(text, "document")
+                                    if embedding and len(embedding) > 0:
+                                        self.cache[text_hash] = embedding
+                                        successful += 1
+                                        logger.info(f"Retry successful for hash {text_hash}")
+                                except Exception as e:
+                                    logger.error(f"Retry failed for hash {text_hash}: {e}")
                         
                     except Exception as e:
                         logger.error(f"Embedding generation failed: {e}")

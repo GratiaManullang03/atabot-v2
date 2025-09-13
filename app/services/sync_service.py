@@ -863,7 +863,7 @@ class SyncService:
         metadata_list: List[Dict[str, Any]]
     ) -> None:
         """
-        Generate and store embeddings for texts - FIXED VERSION
+        Generate and store embeddings for texts
         """
         if not texts:
             return
@@ -877,15 +877,46 @@ class SyncService:
         batch_id = await embedding_queue.add_batch(texts, metadata_list)
         logger.info(f"Added batch {batch_id} to embedding queue ({len(texts)} texts)")
         
-        # Wait for batch to complete processing
+        # Wait for batch processing with timeout
+        logger.info(f"Waiting for batch {batch_id} to complete...")
         success = await embedding_queue.wait_for_batch(batch_id, timeout=300)
         
         if not success:
             logger.error(f"Batch {batch_id} failed or timed out")
-            # Fallback: try to get whatever embeddings are available
+            # Don't continue with zero vectors - raise error instead
+            raise RuntimeError(f"Failed to generate embeddings for batch {batch_id}")
         
-        # Get embeddings from cache (whether success or not)
-        embeddings = embedding_queue.get_embeddings_for_batch(batch_id, texts)
+        # Get embeddings from cache
+        embeddings = []
+        failed_count = 0
+        
+        for text in texts:
+            text_hash = hashlib.md5(text.encode()).hexdigest()
+            embedding = embedding_queue.cache.get(text_hash)
+            
+            if embedding and len(embedding) > 0:
+                # Validate it's not all zeros
+                non_zero_count = sum(1 for v in embedding if v != 0)
+                if non_zero_count > len(embedding) * 0.1:
+                    embeddings.append(embedding)
+                else:
+                    logger.critical(f"Embedding is all zeros for text: {text[:100]}...")
+                    failed_count += 1
+                    # Skip this row instead of using zero vector
+                    continue
+            else:
+                logger.critical(f"No embedding found for text: {text[:100]}...")
+                failed_count += 1
+                # Skip this row instead of using zero vector
+                continue
+        
+        if failed_count > 0:
+            logger.error(f"Failed to get valid embeddings for {failed_count}/{len(texts)} texts")
+        
+        # Only store valid embeddings
+        if not embeddings:
+            logger.error(f"No valid embeddings to store for {schema}.{table}")
+            return
         
         # Handle any missing embeddings
         final_embeddings = []

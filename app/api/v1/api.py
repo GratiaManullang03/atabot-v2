@@ -6,11 +6,10 @@ from fastapi import APIRouter
 # Import all endpoint routers
 from app.api.v1.endpoints import health, schemas, sync, chat, monitoring
 
-# Create main API router
-api_router = APIRouter()
+api_router = APIRouter(prefix="/api/v1")
 
 # Include all endpoint routers with proper prefixes
-api_router.include_router(health.router, prefix="", tags=["Health"])
+api_router.include_router(health.router, tags=["Health"])
 api_router.include_router(schemas.router, prefix="/schemas", tags=["Schemas"]) 
 api_router.include_router(sync.router, prefix="/sync", tags=["Synchronization"])
 api_router.include_router(chat.router, prefix="/chat", tags=["Chat"])

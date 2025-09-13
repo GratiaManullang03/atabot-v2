@@ -1,16 +1,16 @@
 """
-VoyageAI Embedding Service with Rate Limiting
-Handles strict rate limits (3 RPM for free tier)
+VoyageAI Embedding Service with Better Error Handling
+Handles rate limits and validation properly
 """
 import voyageai
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from loguru import logger
 import asyncio
 from tenacity import retry, stop_after_attempt, wait_exponential
 import hashlib
 from datetime import datetime
 
-from .config import settings
+from app.core.config import settings
 
 class RateLimiter:
     """Simple rate limiter for API calls"""
@@ -58,11 +58,10 @@ class EmbeddingService:
         self.client = voyageai.Client(api_key=settings.VOYAGE_API_KEY)
         self.model = settings.VOYAGE_MODEL
         self.dimensions = settings.EMBEDDING_DIMENSIONS
-
-        self.batch_size = min(settings.EMBEDDING_BATCH_SIZE, 120)
+        self.batch_size = min(settings.EMBEDDING_BATCH_SIZE, 8)  # Reduce batch size for testing
                 
-        # Rate limiter: 2 requests per minute for free tier
-        self.rate_limiter = RateLimiter(max_requests=2, window_seconds=60)  # Even more conservative: 2 RPM
+        # Rate limiter: Conservative for free tier
+        self.rate_limiter = RateLimiter(max_requests=2, window_seconds=60)
         
         # Simple in-memory cache for embeddings
         self._cache: Dict[str, List[float]] = {}
@@ -73,27 +72,39 @@ class EmbeddingService:
         """Generate cache key for text"""
         return hashlib.md5(f"{text}:{input_type}".encode()).hexdigest()
     
+    def _validate_embedding(self, embedding: List[float]) -> bool:
+        """Check if an embedding is valid (not all zeros)"""
+        if not embedding or len(embedding) == 0:
+            return False
+        
+        # Check if at least some values are non-zero
+        non_zero_count = sum(1 for v in embedding if v != 0)
+        
+        # At least 10% should be non-zero for a valid embedding
+        return non_zero_count > len(embedding) * 0.1
+    
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=2, min=10, max=30)  # Longer waits between retries
+        wait=wait_exponential(multiplier=2, min=10, max=60)
     )
     async def generate_embedding(
         self, 
         text: str, 
         input_type: str = "document"
-    ) -> List[float]:
+    ) -> Optional[List[float]]:
         """
-        Generate embedding for a single text with rate limiting
+        Generate embedding for a single text with rate limiting and validation
         
         Args:
             text: Text to embed
             input_type: 'document' for indexing, 'query' for searching
         
         Returns:
-            List of floats representing the embedding vector
+            List of floats representing the embedding vector, or None if failed
         """
         if not text or not text.strip():
-            raise ValueError("Text cannot be empty")
+            logger.error("Empty text provided for embedding")
+            return None
         
         # Check cache
         cache_key = self._get_cache_key(text, input_type)
@@ -106,14 +117,12 @@ class EmbeddingService:
         if len(text) > max_length:
             logger.warning(f"Text truncated from {len(text)} to {max_length} characters")
             text = text[:max_length]
-
-        # Track metrics
-        from app.core.metrics import usage_tracker
-        usage_tracker.log_api_call('voyage')
         
         try:
             # Apply rate limiting
             await self.rate_limiter.wait_if_needed()
+            
+            logger.info(f"Generating embedding for text: {text[:100]}...")
             
             # VoyageAI's client is synchronous, so we run it in executor
             loop = asyncio.get_event_loop()
@@ -122,35 +131,61 @@ class EmbeddingService:
                 lambda: self.client.embed(
                     texts=[text],
                     model=self.model,
-                    input_type=input_type
+                    input_type=input_type,
+                    truncation=True  # Enable truncation to avoid errors
                 )
             )
             
+            if not response or not response.embeddings or len(response.embeddings) == 0:
+                logger.error("VoyageAI returned empty response")
+                return None
+            
             embedding = response.embeddings[0]
+            
+            # Validate embedding
+            if not self._validate_embedding(embedding):
+                logger.error(f"VoyageAI returned invalid embedding (all zeros or empty)")
+                return None
             
             # Cache the result
             if settings.ENABLE_CACHE:
                 self._add_to_cache(cache_key, embedding)
             
+            logger.info(f"Successfully generated embedding with {len(embedding)} dimensions")
             return embedding
             
         except Exception as e:
-            if "rate limit" in str(e).lower():
+            error_msg = str(e).lower()
+            
+            if "rate limit" in error_msg:
                 logger.error(f"Rate limit hit: {e}")
+                
+                # Check if it's about payment method
+                if "payment method" in error_msg:
+                    logger.critical("VoyageAI requires payment method for higher rate limits!")
+                    logger.info("Please add payment method at: https://dashboard.voyageai.com/")
+                
                 # Wait longer before retry
                 await asyncio.sleep(30)
-                raise
-            logger.error(f"Failed to generate embedding: {e}")
-            raise
+                raise  # Let retry decorator handle it
+            
+            elif "api key" in error_msg or "unauthorized" in error_msg:
+                logger.critical(f"VoyageAI API key issue: {e}")
+                logger.info("Please check your VOYAGE_API_KEY in .env file")
+                return None
+            
+            else:
+                logger.error(f"Failed to generate embedding: {e}")
+                return None
     
     async def generate_batch_embeddings(
         self,
         texts: List[str],
         input_type: str = "document",
         show_progress: bool = True
-    ) -> List[List[float]]:
+    ) -> List[Optional[List[float]]]:
         """
-        Generate embeddings for multiple texts with aggressive rate limiting
+        Generate embeddings for multiple texts with aggressive rate limiting and validation
         
         Args:
             texts: List of texts to embed
@@ -158,50 +193,55 @@ class EmbeddingService:
             show_progress: Whether to log progress
         
         Returns:
-            List of embedding vectors
+            List of embedding vectors (None for failed embeddings)
         """
         if not texts:
             return []
         
         # Filter out empty texts
-        valid_texts = [(i, t) for i, t in enumerate(texts) if t and t.strip()]
-        if len(valid_texts) != len(texts):
-            logger.warning(f"Filtered out {len(texts) - len(valid_texts)} empty texts")
+        valid_indices_texts = [(i, t) for i, t in enumerate(texts) if t and t.strip()]
         
+        if len(valid_indices_texts) != len(texts):
+            logger.warning(f"Filtered out {len(texts) - len(valid_indices_texts)} empty texts")
+        
+        # Initialize results with None
         all_embeddings = [None] * len(texts)
         
-        # Use much smaller batches due to rate limiting
-        # With 2 RPM, we need to process very slowly
-        micro_batch_size = min(self.batch_size, len(valid_texts))
+        # Process in small batches due to rate limiting
+        batch_size = min(self.batch_size, 8)  # Even smaller batches for free tier
+        total_batches = (len(valid_indices_texts) + batch_size - 1) // batch_size
         
-        total_batches = (len(valid_texts) + micro_batch_size - 1) // micro_batch_size
+        logger.info(f"Processing {len(valid_indices_texts)} texts in {total_batches} batches (batch size: {batch_size})")
         
-        logger.info(f"Processing {len(valid_texts)} texts in {total_batches} batches (rate limited to 3 RPM)")
+        successful = 0
+        failed = 0
         
-        # Process in micro-batches with rate limiting
-        for batch_num, batch_start in enumerate(range(0, len(valid_texts), micro_batch_size)):
-            batch_end = min(batch_start + micro_batch_size, len(valid_texts))
-            batch_indices_texts = valid_texts[batch_start:batch_end]
-            batch_texts = [text for _, text in batch_indices_texts]
+        for batch_num in range(total_batches):
+            batch_start = batch_num * batch_size
+            batch_end = min(batch_start + batch_size, len(valid_indices_texts))
+            batch_indices_texts = valid_indices_texts[batch_start:batch_end]
             
-            try:
-                # Check cache first
-                cached_embeddings = []
-                uncached_indices = []
-                uncached_texts = []
-                
-                for idx, (orig_idx, text) in enumerate(batch_indices_texts):
-                    cache_key = self._get_cache_key(text, input_type)
-                    if settings.ENABLE_CACHE and cache_key in self._cache:
-                        cached_embeddings.append((orig_idx, self._cache[cache_key]))
-                    else:
-                        uncached_indices.append((idx, orig_idx))
-                        uncached_texts.append(text[:8000])  # Truncate if needed
-                
-                # Generate embeddings for uncached texts
-                if uncached_texts:
+            # Check cache first
+            cached_count = 0
+            for orig_idx, text in batch_indices_texts:
+                cache_key = self._get_cache_key(text, input_type)
+                if settings.ENABLE_CACHE and cache_key in self._cache:
+                    all_embeddings[orig_idx] = self._cache[cache_key]
+                    cached_count += 1
+                    successful += 1
+            
+            # Get uncached texts
+            uncached = [(idx, text) for idx, text in batch_indices_texts 
+                       if all_embeddings[idx] is None]
+            
+            if uncached:
+                try:
                     # Apply rate limiting
                     await self.rate_limiter.wait_if_needed()
+                    
+                    uncached_texts = [text[:8000] for _, text in uncached]  # Truncate
+                    
+                    logger.info(f"Batch {batch_num + 1}/{total_batches}: Generating {len(uncached_texts)} embeddings...")
                     
                     loop = asyncio.get_event_loop()
                     response = await loop.run_in_executor(
@@ -209,44 +249,53 @@ class EmbeddingService:
                         lambda: self.client.embed(
                             texts=uncached_texts,
                             model=self.model,
-                            input_type=input_type
+                            input_type=input_type,
+                            truncation=True
                         )
                     )
                     
-                    # Cache and store results
-                    for (batch_idx, orig_idx), embedding in zip(uncached_indices, response.embeddings):
-                        all_embeddings[orig_idx] = embedding
-                        if settings.ENABLE_CACHE:
-                            cache_key = self._get_cache_key(batch_indices_texts[batch_idx][1], input_type)
-                            self._add_to_cache(cache_key, embedding)
-                
-                # Add cached embeddings
-                for orig_idx, embedding in cached_embeddings:
-                    all_embeddings[orig_idx] = embedding
-                
-                if show_progress:
-                    progress = min(batch_end, len(valid_texts))
-                    percent = (progress / len(valid_texts)) * 100
-                    logger.info(f"Batch {batch_num + 1}/{total_batches}: Processed {progress}/{len(valid_texts)} embeddings ({percent:.1f}%)")
+                    if response and response.embeddings:
+                        for (orig_idx, text), embedding in zip(uncached, response.embeddings):
+                            if self._validate_embedding(embedding):
+                                all_embeddings[orig_idx] = embedding
+                                
+                                # Cache valid embedding
+                                if settings.ENABLE_CACHE:
+                                    cache_key = self._get_cache_key(text, input_type)
+                                    self._add_to_cache(cache_key, embedding)
+                                
+                                successful += 1
+                            else:
+                                logger.error(f"Invalid embedding for text {orig_idx}")
+                                failed += 1
+                    else:
+                        logger.error("Empty response from VoyageAI")
+                        failed += len(uncached)
                     
-            except Exception as e:
-                if "rate limit" in str(e).lower():
-                    logger.error(f"Rate limit hit on batch {batch_num + 1}: {e}")
-                    # Wait significant time before continuing
-                    logger.info("Waiting 60 seconds before retrying...")
-                    await asyncio.sleep(60)
-                    # Retry this batch
-                    batch_num -= 1
-                    continue
-                else:
-                    logger.error(f"Failed to generate batch embeddings: {e}")
-                    raise
+                except Exception as e:
+                    logger.error(f"Batch {batch_num + 1} failed: {e}")
+                    failed += len(uncached)
+                    
+                    if "rate limit" in str(e).lower():
+                        logger.info("Waiting 60 seconds due to rate limit...")
+                        await asyncio.sleep(60)
+            
+            if show_progress:
+                progress = min(batch_end, len(valid_indices_texts))
+                percent = (progress / len(valid_indices_texts)) * 100
+                logger.info(f"Progress: {progress}/{len(valid_indices_texts)} ({percent:.1f}%) - Success: {successful}, Failed: {failed}, Cached: {cached_count}")
+            
+            # Wait between batches to respect rate limit
+            if batch_num < total_batches - 1:
+                wait_time = 21  # 60 seconds / 3 RPM = 20 seconds, +1 for safety
+                logger.info(f"Waiting {wait_time} seconds before next batch (rate limit)...")
+                await asyncio.sleep(wait_time)
         
-        # Fill in empty embeddings with zeros (for empty texts)
-        for i in range(len(all_embeddings)):
-            if all_embeddings[i] is None:
-                all_embeddings[i] = [0.0] * self.dimensions
+        # Log final statistics
+        logger.info(f"Embedding generation complete: {successful} successful, {failed} failed")
         
+        # IMPORTANT: Don't return zero vectors for failed embeddings
+        # Return None instead so caller can handle appropriately
         return all_embeddings
     
     def _add_to_cache(self, key: str, embedding: List[float]) -> None:
@@ -332,6 +381,9 @@ class EmbeddingService:
         Returns:
             Similarity score between 0 and 1
         """
+        if not embedding1 or not embedding2:
+            return 0.0
+            
         # Simple cosine similarity without numpy
         dot_product = sum(a * b for a, b in zip(embedding1, embedding2))
         norm1 = sum(a * a for a in embedding1) ** 0.5
