@@ -2,13 +2,10 @@
 Cache Persistence Service - Save embeddings to database for long-term storage
 """
 import asyncio
-import hashlib
 import json
 from typing import Dict, List, Optional
-from datetime import datetime, timedelta
 from loguru import logger
 
-from app.core.config import settings
 from app.core.database import db_pool
 
 class CachePersistenceManager:
@@ -96,7 +93,7 @@ class CachePersistenceManager:
                     values.append((text_hash, embedding))
             
             if values:
-                await db_pool.executemany("""
+                await db_pool.execute_many("""
                     INSERT INTO atabot.embedding_cache (text_hash, embedding)
                     VALUES ($1, $2)
                     ON CONFLICT (text_hash) DO UPDATE

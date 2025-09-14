@@ -85,16 +85,26 @@ class PoeClient:
         usage_tracker.log_api_call('poe')
         
         try:
+            logger.info(f"Making LLM request to Poe API: model={self.model}, max_tokens={request_data['max_tokens']}")
+            logger.debug(f"LLM request prompt preview: {full_prompt[:200]}...")
+
             response = await self.client.post(
                 f"{self.base_url}/chat/completions",
                 headers=self.headers,
                 json=request_data
             )
-            
+
+            logger.info(f"LLM API response status: {response.status_code}")
+
             response.raise_for_status()
-            
+
             result = response.json()
-            return result["choices"][0]["message"]["content"]
+            generated_text = result["choices"][0]["message"]["content"]
+
+            logger.info(f"LLM response received successfully, length: {len(generated_text)} characters")
+            logger.debug(f"LLM response preview: {generated_text[:200]}...")
+
+            return generated_text
             
         except httpx.HTTPStatusError as e:
             logger.error(f"LLM API error: {e.response.status_code} - {e.response.text}")

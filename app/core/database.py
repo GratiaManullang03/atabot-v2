@@ -23,33 +23,69 @@ class DatabasePool:
         self.listeners: Dict[str, Any] = {}
     
     async def init_pool(self) -> None:
-        """Initialize connection pool"""
+        """Initialize connection pool with retry logic for DNS issues"""
         if self.pool:
             return
-            
-        try:
-            # Create connection pool
-            self.pool = await asyncpg.create_pool(
-                settings.DATABASE_URL,
-                min_size=10,
-                max_size=settings.DATABASE_POOL_SIZE,
-                max_queries=50000,
-                max_inactive_connection_lifetime=300,
-                command_timeout=float(settings.DATABASE_POOL_TIMEOUT),
-                server_settings={
-                    'application_name': settings.APP_NAME,
-                    'jit': 'off'  # Disable JIT for more predictable performance
-                }
-            )
-            
-            # Register custom type handlers
-            await self._register_type_handlers()
-            
-            logger.info(f"Database pool initialized with max {settings.DATABASE_POOL_SIZE} connections")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize database pool: {e}")
-            raise
+
+        import asyncio
+        import socket
+
+        max_retries = 3
+        retry_delay = 5
+
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Attempting to connect to database (attempt {attempt + 1}/{max_retries})")
+
+                # Extract hostname for DNS debugging
+                if "://" in settings.DATABASE_URL:
+                    try:
+                        from urllib.parse import urlparse
+                        parsed = urlparse(settings.DATABASE_URL)
+                        hostname = parsed.hostname
+                        logger.info(f"Connecting to hostname: {hostname}")
+
+                        # Test DNS resolution
+                        import socket
+                        socket.gethostbyname(hostname)
+                        logger.info(f"DNS resolution successful for {hostname}")
+                    except Exception as dns_e:
+                        logger.warning(f"DNS resolution failed for {hostname}: {dns_e}")
+
+                # Create connection pool
+                self.pool = await asyncpg.create_pool(
+                    settings.DATABASE_URL,
+                    min_size=10,
+                    max_size=settings.DATABASE_POOL_SIZE,
+                    max_queries=50000,
+                    max_inactive_connection_lifetime=300,
+                    command_timeout=float(settings.DATABASE_POOL_TIMEOUT),
+                    server_settings={
+                        'application_name': settings.APP_NAME,
+                        'jit': 'off'  # Disable JIT for more predictable performance
+                    }
+                )
+
+                # Register custom type handlers
+                await self._register_type_handlers()
+
+                logger.info(f"Database pool initialized with max {settings.DATABASE_POOL_SIZE} connections")
+                return
+
+            except (socket.gaierror, OSError, asyncpg.exceptions.ConnectionFailure) as e:
+                logger.warning(f"Database connection attempt {attempt + 1} failed: {e}")
+
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    logger.error(f"Failed to connect to database after {max_retries} attempts")
+                    logger.error("Check network connectivity and database availability")
+                    raise
+            except Exception as e:
+                logger.error(f"Failed to initialize database pool: {e}")
+                raise
     
     async def close_pool(self) -> None:
         """Close connection pool"""

@@ -28,6 +28,8 @@ class SyncService:
     def __init__(self):
         self.active_jobs: Dict[str, Dict[str, Any]] = {}
         self.sync_lock = asyncio.Lock()
+        self.sync_jobs = {}
+        self.batch_size = settings.SYNC_BATCH_SIZE
     
     async def _ensure_schema_analyzed(self, schema: str) -> None:
         """
@@ -116,61 +118,66 @@ class SyncService:
         self,
         schema: str,
         table: str,
-        mode: str = "incremental"
-    ) -> Dict[str, Any]:
+        mode: str = "full",
+        job_id: Optional[str] = None
+    ):
         """
-        Sync a table to vector store
-        
-        Args:
-            schema: Schema name
-            table: Table name
-            mode: 'full' for complete resync, 'incremental' for changes only
-            
-        Returns:
-            Sync result with statistics
+        Sync a single table with proper pattern handling
         """
-        job_id = str(uuid.uuid4())
-        start_time = datetime.now()
+        if not job_id:
+            job_id = f"{datetime.now().timestamp()}_{schema}_{table}"
         
-        # Register job
-        self.active_jobs[job_id] = {
-            "status": "running",
-            "started_at": start_time.isoformat(),
-            "schema": schema,
-            "table": table,
-            "mode": mode
-        }
+        logger.info(f"Starting {mode} sync for {schema}.{table} with job_id: {job_id}")
         
         try:
-            logger.info(f"Starting {mode} sync for {schema}.{table}")
+            # Clear existing embeddings if full sync
+            if mode == "full":
+                await self._clear_table_embeddings(schema, table)
             
-            # Ensure schema has been analyzed first
-            await self._ensure_schema_analyzed(schema)
+            # Get patterns from database (bukan dari analyze_table yang tidak ada!)
+            patterns = await self._get_table_patterns(schema, table)
             
-            # Get table info
-            table_info = await db_pool.get_table_info(schema, table)
-            if not table_info:
-                raise ValueError(f"Table {schema}.{table} not found")
+            # Get row count for progress tracking
+            row_count = await self._get_row_count(schema, table)
+            if row_count == 0:
+                logger.info(f"No rows to sync in {schema}.{table}")
+                return
             
-            # Check if sync tracking exists
-            await self._ensure_sync_tracking(schema, table)
+            # Process in batches
+            offset = 0
+            total_synced = 0
             
-            if mode == "incremental":
-                result = await self._incremental_sync(schema, table, table_info)
-            else:
-                result = await self._full_sync(schema, table, table_info)
+            while offset < row_count:
+                # Fetch batch of rows
+                rows = await self._fetch_batch(schema, table, offset, self.batch_size)
+                if not rows:
+                    break
+                
+                # Process this batch
+                success_count = await self._process_batch_with_validation(
+                    schema, table, rows, patterns
+                )
+                
+                total_synced += success_count
+                offset += self.batch_size
+                
+                # Update progress (sebagai dict, bukan integer!)
+                progress = min((offset / row_count) * 100, 100)
+                if job_id in self.sync_jobs:
+                    self.sync_jobs[job_id]["progress"] = {
+                        "percentage": progress,
+                        "rows_processed": total_synced,
+                        "total_rows": row_count
+                    }
+                logger.info(f"Sync progress for {schema}.{table}: {progress:.1f}% ({total_synced}/{row_count})")
             
-            # Update job status
-            self.active_jobs[job_id]["status"] = "completed"
-            self.active_jobs[job_id]["completed_at"] = datetime.now().isoformat()
-            self.active_jobs[job_id]["result"] = result
-            
-            return result
+            # Update sync status dengan kolom yang benar
+            await self._update_sync_status_correct(schema, table, "completed", total_synced)
+            logger.info(f"Successfully synced {total_synced} embeddings for {schema}.{table}")
             
         except Exception as e:
             logger.error(f"Sync failed for {schema}.{table}: {e}")
-            self.active_jobs[job_id]["status"] = "failed"
-            self.active_jobs[job_id]["error"] = str(e)
+            await self._update_sync_status_correct(schema, table, "failed", 0, str(e))
             raise
     
     async def sync_table_with_job_id(
@@ -298,7 +305,7 @@ class SyncService:
             logger.info(f"Sync progress for {schema}.{table}: {progress:.1f}% ({rows_processed}/{total_rows})")
         
         # Update sync status
-        await self._update_sync_status(schema, table, "completed", rows_processed)
+        await self._update_sync_status_correct(schema, table, "completed", rows_processed)
         
         duration = (datetime.now() - start_time).total_seconds()
         
@@ -378,7 +385,7 @@ class SyncService:
             await self._process_batch(schema, table, batch, table_info)
         
         # Update sync status
-        await self._update_sync_status(schema, table, "completed", total_rows)
+        await self._update_sync_status_correct(schema, table, "completed", total_rows)
         
         duration = (datetime.now() - start_time).total_seconds()
         
@@ -436,26 +443,42 @@ class SyncService:
         batch_id = await embedding_queue.add_batch(texts, metadata_list)
         logger.info(f"Added batch {batch_id} to embedding queue ({len(texts)} texts)")
         
-        # Wait for processing (optional, atau bisa async)
-        # Untuk sync operation, kita tunggu selesai
-        while batch_id in embedding_queue.queue:
-            await asyncio.sleep(1)
-        
+        # Wait for batch processing to complete
+        success = await embedding_queue.wait_for_batch(batch_id, timeout=300)
+
+        if not success:
+            logger.error(f"Batch {batch_id} failed or timed out")
+            return  # Don't store zero vectors
+
         # Get embeddings from cache
         embeddings = []
-        for text in texts:
+        valid_ids = []
+        valid_texts = []
+        valid_metadata = []
+
+        for i, text in enumerate(texts):
             text_hash = hashlib.md5(text.encode()).hexdigest()
             embedding = embedding_queue.cache.get(text_hash)
-            if embedding:
-                embeddings.append(embedding)
+            if embedding and len(embedding) > 0:
+                # Validate embedding is not all zeros
+                non_zero_count = sum(1 for v in embedding if v != 0)
+                if non_zero_count > len(embedding) * 0.1:
+                    embeddings.append(embedding)
+                    valid_ids.append(ids[i])
+                    valid_texts.append(texts[i])
+                    valid_metadata.append(metadata_list[i])
+                else:
+                    logger.warning(f"Skipping zero embedding for text: {text[:100]}...")
             else:
-                # Fallback jika tidak ada di cache
-                logger.warning(f"Embedding not found in cache for text hash: {text_hash}")
-                embeddings.append([0.0] * settings.EMBEDDING_DIMENSIONS)
+                logger.warning(f"No valid embedding found for text: {text[:100]}...")
+
+        if not embeddings:
+            logger.error("No valid embeddings to store")
+            return
         
-        # Store embeddings
+        # Store only valid embeddings
         await self._store_embeddings(
-            schema, table, ids, texts, embeddings, metadata_list
+            schema, table, valid_ids, valid_texts, embeddings, valid_metadata
         )
     
     def _generate_searchable_text(
@@ -612,24 +635,42 @@ class SyncService:
         """
         await db_pool.execute(query, schema, table)
     
-    async def _update_sync_status(
+    async def _update_sync_status_correct(
         self,
         schema: str,
         table: str,
         status: str,
-        rows_synced: int
-    ) -> None:
+        rows_synced: int,
+        error: Optional[str] = None
+    ):
         """
-        Update sync status tracking
+        Update sync status dengan kolom yang benar dari database
         """
-        query = """
-            UPDATE atabot.sync_status
-            SET sync_status = $1,
-                last_sync_completed = NOW(),
-                rows_synced = $2
-            WHERE schema_name = $3 AND table_name = $4
-        """
-        await db_pool.execute(query, status, rows_synced, schema, table)
+        try:
+            if status == "completed":
+                await db_pool.execute("""
+                    INSERT INTO atabot.sync_status 
+                    (schema_name, table_name, sync_status, last_sync_completed, rows_synced)
+                    VALUES ($1, $2, $3, NOW(), $4)
+                    ON CONFLICT (schema_name, table_name)
+                    DO UPDATE SET 
+                        sync_status = $3,
+                        last_sync_completed = NOW(),
+                        rows_synced = $4,
+                        last_error = NULL
+                """, schema, table, status, rows_synced)
+            else:
+                await db_pool.execute("""
+                    INSERT INTO atabot.sync_status 
+                    (schema_name, table_name, sync_status, last_error)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (schema_name, table_name)
+                    DO UPDATE SET 
+                        sync_status = $3,
+                        last_error = $4
+                """, schema, table, status, error)
+        except Exception as e:
+            logger.error(f"Failed to update sync status: {e}")
     
     async def _get_last_sync_time(
         self,
@@ -744,12 +785,14 @@ class SyncService:
         self,
         schema: str,
         tables: Optional[List[str]] = None,
-        mode: str = "incremental"
+        mode: str = "incremental",
+        job_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Sync entire schema or specific tables (backward compatibility)
         """
-        job_id = str(uuid.uuid4())
+        if job_id is None:
+            job_id = str(uuid.uuid4())
         return await self.sync_schema_with_job_id(job_id, schema, tables, mode)
     
     async def sync_schema_with_job_id(
@@ -757,56 +800,62 @@ class SyncService:
         job_id: str,
         schema: str,
         tables: Optional[List[str]] = None,
-        mode: str = "incremental"
-    ) -> Dict[str, Any]:
-        """
-        Sync entire schema with pre-generated job_id
-        """
-        logger.info(f"Starting schema sync for {schema} with job_id: {job_id}")
-        
-        # Register main job
-        self.active_jobs[job_id] = {
-            "status": "running",
-            "started_at": datetime.now().isoformat(),
-            "schema": schema,
-            "mode": mode,
-            "type": "schema_sync"
-        }
-        
-        # Ensure schema has been analyzed first
-        await self._ensure_schema_analyzed(schema)
-        
-        # Get tables to sync
-        if not tables:
-            all_tables = await db_pool.get_tables(schema)
-            tables = [t['table_name'] for t in all_tables]
-        
-        results = {}
-        failed = []
-        
-        for table in tables:
-            try:
-                # Create sub-job for each table
-                sub_job_id = f"{job_id}_{table}"
-                result = await self.sync_table_with_job_id(sub_job_id, schema, table, mode)
-                results[table] = result
-            except Exception as e:
-                logger.error(f"Failed to sync {schema}.{table}: {e}")
-                failed.append(table)
-                results[table] = {"status": "failed", "error": str(e)}
-        
-        # Update main job
-        self.active_jobs[job_id]["status"] = "completed" if not failed else "partial"
-        self.active_jobs[job_id]["completed_at"] = datetime.now().isoformat()
-        self.active_jobs[job_id]["result"] = {
-            "schema": schema,
-            "tables_synced": len(tables) - len(failed),
-            "tables_failed": len(failed),
-            "failed_tables": failed,
-            "results": results
-        }
-        
-        return self.active_jobs[job_id]["result"]
+        mode: str = "full"
+    ):
+        """Sync schema with proper job tracking"""
+        try:
+            # Initialize job dengan format yang benar
+            self.sync_jobs[job_id] = {
+                "status": "running",
+                "schema": schema,
+                "tables": tables or [],
+                "progress": {  # Progress sebagai dict, bukan integer!
+                    "percentage": 0,
+                    "tables_completed": 0,
+                    "total_tables": 0
+                },
+                "started_at": datetime.now().isoformat(),  # Convert ke string!
+                "errors": []
+            }
+            
+            # Ensure schema has been analyzed first
+            await self._ensure_schema_analyzed(schema)
+
+            # Get all tables if none specified
+            if not tables:
+                table_list = await db_pool.get_tables(schema)
+                tables = [table['table_name'] for table in table_list]
+
+            total_tables = len(tables)
+            self.sync_jobs[job_id]["progress"]["total_tables"] = total_tables
+
+            # Sync each table
+            for i, table_name in enumerate(tables):
+                try:
+                    await self.sync_table_with_job_id(
+                        f"{job_id}_{table_name}",
+                        schema,
+                        table_name,
+                        mode
+                    )
+
+                    # Update progress
+                    self.sync_jobs[job_id]["progress"]["tables_completed"] = i + 1
+                    self.sync_jobs[job_id]["progress"]["percentage"] = ((i + 1) / total_tables) * 100
+
+                except Exception as e:
+                    logger.error(f"Failed to sync table {schema}.{table_name}: {e}")
+                    self.sync_jobs[job_id]["errors"].append(f"Table {table_name}: {str(e)}")
+            
+            self.sync_jobs[job_id]["status"] = "completed"
+            self.sync_jobs[job_id]["completed_at"] = datetime.now().isoformat()  # Convert ke string!
+            
+        except Exception as e:
+            logger.error(f"Schema sync failed for {schema}: {e}")
+            if job_id in self.sync_jobs:
+                self.sync_jobs[job_id]["status"] = "failed"
+                self.sync_jobs[job_id]["errors"].append(str(e))
+                self.sync_jobs[job_id]["completed_at"] = datetime.now().isoformat()
     
     async def enable_realtime_sync(
         self,
@@ -888,27 +937,29 @@ class SyncService:
         
         # Get embeddings from cache
         embeddings = []
+        valid_ids = []
+        valid_texts = []
+        valid_metadata = []
         failed_count = 0
-        
-        for text in texts:
+
+        for i, text in enumerate(texts):
             text_hash = hashlib.md5(text.encode()).hexdigest()
             embedding = embedding_queue.cache.get(text_hash)
-            
+
             if embedding and len(embedding) > 0:
                 # Validate it's not all zeros
                 non_zero_count = sum(1 for v in embedding if v != 0)
                 if non_zero_count > len(embedding) * 0.1:
                     embeddings.append(embedding)
+                    valid_ids.append(ids[i])
+                    valid_texts.append(texts[i])
+                    valid_metadata.append(metadata_list[i])
                 else:
-                    logger.critical(f"Embedding is all zeros for text: {text[:100]}...")
+                    logger.warning(f"Skipping zero embedding for text: {text[:100]}...")
                     failed_count += 1
-                    # Skip this row instead of using zero vector
-                    continue
             else:
-                logger.critical(f"No embedding found for text: {text[:100]}...")
+                logger.warning(f"No valid embedding found for text: {text[:100]}...")
                 failed_count += 1
-                # Skip this row instead of using zero vector
-                continue
         
         if failed_count > 0:
             logger.error(f"Failed to get valid embeddings for {failed_count}/{len(texts)} texts")
@@ -917,55 +968,12 @@ class SyncService:
         if not embeddings:
             logger.error(f"No valid embeddings to store for {schema}.{table}")
             return
-        
-        # Handle any missing embeddings
-        final_embeddings = []
-        failed_count = 0
-        
-        for i, embedding in enumerate(embeddings):
-            if embedding is None or len(embedding) == 0:
-                # Log the failure
-                logger.error(f"No embedding for text {i}: {texts[i][:100]}...")
-                failed_count += 1
-                
-                # Fallback strategy: Try to generate individually (last resort)
-                try:
-                    from app.core.embeddings import embedding_service
-                    individual_embedding = await embedding_service.generate_embedding(
-                        texts[i], 
-                        input_type="document"
-                    )
-                    if individual_embedding and len(individual_embedding) > 0:
-                        final_embeddings.append(individual_embedding)
-                        # Also cache it
-                        text_hash = hashlib.md5(texts[i].encode()).hexdigest()
-                        embedding_queue.cache[text_hash] = individual_embedding
-                    else:
-                        # Ultimate fallback: zero vector (but log it as critical)
-                        logger.critical(f"Using zero vector for row {ids[i]} in {schema}.{table}")
-                        final_embeddings.append([0.0] * settings.EMBEDDING_DIMENSIONS)
-                except Exception as e:
-                    logger.critical(f"Failed to generate individual embedding: {e}")
-                    # Use zero vector as last resort
-                    final_embeddings.append([0.0] * settings.EMBEDDING_DIMENSIONS)
-            else:
-                # Valid embedding
-                final_embeddings.append(embedding)
-        
-        if failed_count > 0:
-            logger.warning(f"Failed to generate {failed_count}/{len(texts)} embeddings, used fallback")
-        
-        # Validate embeddings before storing
-        valid_count = sum(1 for emb in final_embeddings if any(v != 0 for v in emb))
-        if valid_count == 0:
-            logger.critical(f"ALL embeddings are zero vectors for {schema}.{table}!")
-            # This is a critical issue - might want to raise an exception or alert
-        else:
-            logger.info(f"Storing {valid_count}/{len(final_embeddings)} valid embeddings")
-        
-        # Store embeddings
+
+        logger.info(f"Storing {len(embeddings)} valid embeddings for {schema}.{table}")
+
+        # Store only valid embeddings
         await self._store_embeddings(
-            schema, table, ids, texts, final_embeddings, metadata_list
+            schema, table, valid_ids, valid_texts, embeddings, valid_metadata
         )
 
     # Additional helper method to check embedding validity
@@ -979,6 +987,174 @@ class SyncService:
         
         # At least 10% should be non-zero for a valid embedding
         return non_zero_count > len(embedding) * 0.1
+    
+    async def _get_table_patterns(self, schema: str, table: str) -> Dict:
+        """
+        Get patterns for a table from stored schema analysis
+        """
+        try:
+            query = """
+                SELECT metadata, learned_patterns
+                FROM atabot.managed_schemas
+                WHERE schema_name = $1
+            """
+            result = await db_pool.fetchrow(query, schema)
+            
+            if result and result['metadata']:
+                metadata = json.loads(result['metadata'])
+                if table in metadata:
+                    return metadata[table]
+            
+            # Return default patterns if not found
+            return {
+                'entity_type': 'record',
+                'display_fields': [],
+                'searchable_fields': [],
+                'terminology': {}
+            }
+        except Exception as e:
+            logger.warning(f"Failed to get patterns for {schema}.{table}: {e}")
+            return {
+                'entity_type': 'record',
+                'display_fields': [],
+                'searchable_fields': [],
+                'terminology': {}
+            }
+        
+    def _extract_row_id(self, row: Dict[str, Any]) -> Optional[str]:
+        """
+        Extract row ID from row data
+        """
+        # Try common primary key column names
+        pk_candidates = ['id', 'uuid', 'guid', 'primary_id']
+        
+        for col in pk_candidates:
+            if col in row and row[col] is not None:
+                return str(row[col])
+        
+        # Look for columns ending with _id or _uuid
+        for col_name, value in row.items():
+            if value is not None and (col_name.endswith('_id') or col_name.endswith('_uuid')):
+                return str(value)
+        
+        # Generate hash-based ID if no primary key found
+        row_str = json.dumps(row, sort_keys=True, default=str)
+        return hashlib.md5(row_str.encode()).hexdigest()
+    
+    async def _get_row_count(self, schema: str, table: str) -> int:
+        """
+        Get total row count for a table
+        """
+        query = f"SELECT COUNT(*) FROM {quote_ident(schema)}.{quote_ident(table)}"
+        try:
+            count = await db_pool.fetchval(query)
+            return count or 0
+        except Exception as e:
+            logger.error(f"Failed to get row count for {schema}.{table}: {e}")
+            return 0
+    
+    async def _fetch_batch(self, schema: str, table: str, offset: int, limit: int) -> List[Dict[str, Any]]:
+        """
+        Fetch batch of rows from table
+        """
+        query = f"""
+            SELECT * FROM {quote_ident(schema)}.{quote_ident(table)}
+            LIMIT $1 OFFSET $2
+        """
+        try:
+            rows = await db_pool.fetch(query, limit, offset)
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Failed to fetch batch from {schema}.{table}: {e}")
+            return []
+
+    async def _process_batch_with_validation(
+        self,
+        schema: str,
+        table: str,
+        rows: List[Dict],
+        patterns: Dict
+    ) -> int:
+        """
+        Process batch with proper validation
+        """
+        if not rows:
+            return 0
+        
+        # Generate searchable texts
+        ids = []
+        texts = []
+        metadata_list = []
+        
+        for row in rows:
+            # Generate ID
+            row_id = self._extract_row_id(row)
+            if not row_id:
+                continue
+            
+            # Generate searchable text dengan patterns yang sudah ada
+            text = self._generate_searchable_text(row, table, patterns)
+            if not text or len(text.strip()) < 10:
+                logger.warning(f"Skipping row {row_id} - insufficient text content")
+                continue
+            
+            # Prepare metadata
+            metadata = {
+                "schema": schema,
+                "table": table,
+                "row_id": str(row_id),
+                "columns": list(row.keys()),
+                "synced_at": datetime.now().isoformat()
+            }
+            
+            ids.append(row_id)
+            texts.append(text)
+            metadata_list.append(metadata)
+        
+        if not texts:
+            logger.warning(f"No valid texts to process in batch for {schema}.{table}")
+            return 0
+        
+        # Import the embedding queue
+        from app.services.embedding_queue import embedding_queue
+        
+        # Add to queue and get batch ID
+        batch_id = await embedding_queue.add_batch(texts, metadata_list)
+        logger.info(f"Added batch {batch_id} to embedding queue ({len(texts)} texts)")
+        
+        # Wait for processing
+        logger.info(f"Waiting for batch {batch_id} to complete...")
+        success = await embedding_queue.wait_for_batch(batch_id, timeout=300)
+        
+        if not success:
+            logger.error(f"Batch {batch_id} failed or timed out")
+            return 0
+        
+        # Get embeddings from cache
+        embeddings = []
+        valid_rows = []
+        valid_texts = []
+        valid_metadata = []
+        
+        for i, text in enumerate(texts):
+            text_hash = hashlib.md5(text.encode()).hexdigest()
+            embedding = embedding_queue.cache.get(text_hash)
+            
+            if embedding and len(embedding) > 0:
+                embeddings.append(embedding)
+                valid_rows.append(ids[i])
+                valid_texts.append(texts[i])
+                valid_metadata.append(metadata_list[i])
+        
+        # Store valid embeddings
+        if embeddings:
+            await self._store_embeddings(
+                schema, table, valid_rows, valid_texts, embeddings, valid_metadata
+            )
+            return len(embeddings)
+        else:
+            logger.error(f"No valid embeddings to store for {schema}.{table}")
+            return 0
 
 # Global sync service instance
 sync_service = SyncService()

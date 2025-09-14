@@ -53,52 +53,97 @@ class SearchService:
                 query,
                 input_type="query"  # Important: use 'query' for search
             )
-            
+
+            if not query_embedding:
+                logger.error("Failed to generate embedding for query")
+                return []
+
+            # Format embedding for PostgreSQL vector type
+            embedding_str = '[' + ','.join(map(str, query_embedding)) + ']'
+
             # Build the hybrid search query
             search_query = self._build_hybrid_search_query(
                 schema, table, filters, top_k * 2  # Get more for re-ranking
             )
-            
+
             # Execute vector similarity search with filters
+            logger.info(f"Executing search query with embedding_str length: {len(embedding_str) if embedding_str else 0}")
+            logger.info(f"Search query: {search_query[:200]}...")
+
             results = await db_pool.fetch(
                 search_query,
-                query_embedding,  # Pass as parameter $1
+                embedding_str,  # Pass formatted embedding string
                 similarity_threshold
             )
-            
+
+            logger.info(f"Raw search results count: {len(results)}")
+
             # Process and rank results
             processed_results = []
-            for row in results:
-                result = dict(row)
-                
-                # Parse metadata
-                if result.get('metadata'):
-                    result['metadata'] = json.loads(result['metadata'])
-                
-                # Calculate combined score (vector similarity + relevance boosting)
-                vector_score = result['similarity']
-                
-                # Boost score based on query terms appearing in content
-                content_boost = self._calculate_content_boost(query, result['content'])
-                
-                # Combined score
-                result['score'] = (vector_score * 0.7) + (content_boost * 0.3)
-                
-                processed_results.append(result)
+            for i, row in enumerate(results):
+                try:
+                    result = dict(row)
+                    logger.info(f"Processing result {i+1}: id={result.get('id')}, metadata type: {type(result.get('metadata'))}")
+
+                    # Parse metadata - handle both string and dict formats
+                    if result.get('metadata'):
+                        metadata = result['metadata']
+                        if isinstance(metadata, str):
+                            logger.debug(f"Parsing metadata string: {metadata[:100]}...")
+                            result['metadata'] = json.loads(metadata)
+                        elif isinstance(metadata, dict):
+                            logger.debug("Metadata is already a dict, keeping as-is")
+                            # Already parsed (JSONB column)
+                            pass
+                        else:
+                            logger.warning(f"Unexpected metadata type: {type(metadata)}")
+                            result['metadata'] = {}
+                    else:
+                        logger.debug("No metadata found in result")
+                        result['metadata'] = {}
+
+                    # Calculate combined score (vector similarity + relevance boosting)
+                    vector_score = result.get('similarity', 0.0)
+                    logger.debug(f"Vector score for result {i+1}: {vector_score}")
+
+                    # Boost score based on query terms appearing in content
+                    content = result.get('content', '')
+                    content_boost = self._calculate_content_boost(query, content)
+                    logger.debug(f"Content boost for result {i+1}: {content_boost}")
+
+                    # Combined score
+                    result['score'] = (vector_score * 0.7) + (content_boost * 0.3)
+                    logger.info(f"Final score for result {i+1}: {result['score']} (vector: {vector_score}, boost: {content_boost})")
+
+                    processed_results.append(result)
+
+                except Exception as e:
+                    logger.error(f"Error processing search result {i+1}: {e}")
+                    logger.error(f"Result data: {dict(row) if row else 'None'}")
+                    continue
             
             # Sort by combined score and limit
+            logger.info(f"Sorting {len(processed_results)} processed results by score")
             processed_results.sort(key=lambda x: x['score'], reverse=True)
             final_results = processed_results[:top_k]
-            
+
+            logger.info(f"Top {len(final_results)} results selected")
+
             # Add source information
-            for result in final_results:
+            for i, result in enumerate(final_results):
+                logger.debug(f"Adding source info to result {i+1}: table={result.get('table_name', table)}")
                 result['source'] = {
                     'schema': schema,
                     'table': result.get('table_name', table),
                     'id': result.get('id')
                 }
-            
-            logger.info(f"Found {len(final_results)} results for query: {query}")
+
+            logger.info(f"Search completed successfully: Found {len(final_results)} results for query: '{query}'")
+
+            # Log top results for debugging
+            for i, result in enumerate(final_results[:3]):  # Show top 3
+                logger.info(f"Top result {i+1}: score={result['score']:.4f}, content='{result.get('content', '')[:100]}...'")
+
             return final_results
             
         except Exception as e:
@@ -297,21 +342,38 @@ class SearchService:
             LIMIT $4
         """
         
+        # Format reference embedding for PostgreSQL
+        ref_embedding_str = '[' + ','.join(map(str, reference['embedding'])) + ']'
+
         results = await db_pool.fetch(
             similar_query,
-            reference['embedding'],
+            ref_embedding_str,
             schema,
             reference_id,
             top_k
         )
         
-        return [
-            {
-                **dict(row),
-                'metadata': json.loads(row['metadata']) if row['metadata'] else {}
-            }
-            for row in results
-        ]
+        processed_similar = []
+        for row in results:
+            result = dict(row)
+
+            # Handle metadata parsing safely
+            if result.get('metadata'):
+                metadata = result['metadata']
+                if isinstance(metadata, str):
+                    result['metadata'] = json.loads(metadata)
+                elif isinstance(metadata, dict):
+                    # Already parsed (JSONB column)
+                    pass
+                else:
+                    result['metadata'] = {}
+            else:
+                result['metadata'] = {}
+
+            processed_similar.append(result)
+
+        logger.info(f"Found {len(processed_similar)} similar items")
+        return processed_similar
     
     async def aggregate_search(
         self,

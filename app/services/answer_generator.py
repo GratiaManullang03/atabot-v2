@@ -245,22 +245,84 @@ class AnswerGenerator:
         language: str
     ) -> str:
         """
-        Generate answer for list of results
+        Generate intelligent answer for list of search results
         """
-        if len(results) > 10:
-            # Too many results, summarize
-            return await self._generate_summary_answer(
-                query, results, context, language
+        if not results:
+            return self._generate_no_data_response(query, language)
+
+        # Add logging to track LLM calls
+        logger.info(f"Generating intelligent answer for {len(results)} search results using LLM")
+
+        # Format results data for LLM processing
+        formatted_results = []
+        for i, result in enumerate(results[:10], 1):  # Limit to top 10 for LLM processing
+            # Extract key information from each result
+            content = result.get('content', '')
+            metadata = result.get('metadata', {})
+
+            # Format key fields from metadata
+            key_info = []
+            for key, value in metadata.items():
+                if not key.startswith('_') and value is not None and str(value).strip():
+                    readable_key = self._make_readable(key)
+                    formatted_value = self._format_value(value, key)
+                    key_info.append(f"{readable_key}: {formatted_value}")
+
+            formatted_results.append({
+                'rank': i,
+                'content': content[:200] + '...' if len(content) > 200 else content,
+                'key_fields': key_info[:5]  # Top 5 most relevant fields
+            })
+
+        # Prepare LLM prompt for intelligent answer generation
+        prompt = f"""You are a helpful business intelligence assistant. A user asked: "{query}"
+
+I found {len(results)} relevant results from the database. Please provide an intelligent, helpful answer based on this information.
+
+Search Results:
+"""
+
+        # Add formatted results to prompt
+        for result in formatted_results:
+            prompt += f"\n{result['rank']}. {', '.join(result['key_fields'])}"
+
+        prompt += f"""
+
+Instructions:
+- Answer the user's question directly and comprehensively
+- Use the specific data from the search results
+- For questions about stock/inventory, provide the exact stock numbers
+- For questions about programs, list the relevant programs
+- If asking about multiple items, organize the information clearly
+- Be conversational and helpful
+- {"Jawab dalam bahasa Indonesia" if language == "id" else "Answer in English"}
+- Format numbers with proper separators (use commas for thousands)
+- If the question asks about stock levels, highlight which items are available vs. out of stock
+
+Please provide a comprehensive answer that directly addresses the user's question."""
+
+        try:
+            logger.info("Calling LLM to generate intelligent answer...")
+            answer = await llm_client.generate(
+                prompt=prompt,
+                temperature=0.2,  # Lower temperature for more focused answers
+                max_tokens=800    # Allow longer responses for comprehensive answers
             )
-        
-        formatted_data = self._format_data_for_display(results)
-        
-        if language == "id":
-            intro = f"Ditemukan {len(results)} hasil untuk '{query}':\n\n"
-        else:
-            intro = f"Found {len(results)} results for '{query}':\n\n"
-        
-        return intro + formatted_data
+            logger.info("LLM answer generated successfully")
+            return answer
+
+        except Exception as e:
+            logger.error(f"LLM generation failed: {e}")
+            # Fallback to formatted answer if LLM fails
+            logger.info("Falling back to formatted answer due to LLM failure")
+            formatted_data = self._format_data_for_display(results)
+
+            if language == "id":
+                intro = f"Ditemukan {len(results)} hasil untuk '{query}':\n\n"
+            else:
+                intro = f"Found {len(results)} results for '{query}':\n\n"
+
+            return intro + formatted_data
     
     async def _generate_table_answer(
         self,
