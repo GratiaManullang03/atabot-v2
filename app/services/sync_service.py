@@ -3,7 +3,7 @@ Data Synchronization Service
 Handles bulk and real-time sync of data to vector store
 """
 from typing import Dict, List, Any, Optional
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 import asyncio
 import hashlib
 import json
@@ -125,7 +125,7 @@ class SyncService:
         Sync a single table with proper pattern handling
         """
         if not job_id:
-            job_id = f"{datetime.now().timestamp()}_{schema}_{table}"
+            job_id = f"{datetime.now(timezone.utc).timestamp()}_{schema}_{table}"
         
         logger.info(f"Starting {mode} sync for {schema}.{table} with job_id: {job_id}")
         
@@ -199,8 +199,8 @@ class SyncService:
         Returns:
             Sync result with statistics
         """
-        start_time = datetime.now()
-        
+        start_time = datetime.now(timezone.utc)
+
         # Register job with provided job_id
         self.active_jobs[job_id] = {
             "status": "running",
@@ -231,7 +231,7 @@ class SyncService:
             
             # Update job status
             self.active_jobs[job_id]["status"] = "completed"
-            self.active_jobs[job_id]["completed_at"] = datetime.now().isoformat()
+            self.active_jobs[job_id]["completed_at"] = datetime.now(timezone.utc).isoformat()
             self.active_jobs[job_id]["result"] = result
             
             return result
@@ -251,7 +251,7 @@ class SyncService:
         """
         Perform full table synchronization
         """
-        start_time = datetime.now()
+        start_time = datetime.now(timezone.utc)
         
         # Clear existing embeddings for this table
         await self._clear_table_embeddings(schema, table)
@@ -307,7 +307,7 @@ class SyncService:
         # Update sync status
         await self._update_sync_status_correct(schema, table, "completed", rows_processed)
         
-        duration = (datetime.now() - start_time).total_seconds()
+        duration = (datetime.now(timezone.utc) - start_time).total_seconds()
         
         return {
             "mode": "full",
@@ -326,7 +326,7 @@ class SyncService:
         """
         Perform incremental synchronization (only changed data)
         """
-        start_time = datetime.now()
+        start_time = datetime.now(timezone.utc)
         
         # Get last sync timestamp
         last_sync = await self._get_last_sync_time(schema, table)
@@ -349,14 +349,30 @@ class SyncService:
             update_column = timestamp_columns[0]
         
         if not update_column:
-            logger.warning(f"No timestamp column found for incremental sync, falling back to full sync")
-            return await self._full_sync(schema, table, table_info)
+            logger.info(f"No timestamp column found for {schema}.{table}, attempting to add one...")
+
+            # Try to add updated_at column and trigger (adaptive)
+            try:
+                await self._ensure_timestamp_column(schema, table)
+                update_column = 'updated_at'
+
+                # Re-get table info to include new column
+                table_info = await db_pool.get_table_info(schema, table)
+
+            except Exception as e:
+                logger.warning(f"Failed to add timestamp column to {schema}.{table}: {e}")
+                logger.warning(f"Falling back to full sync for {schema}.{table}")
+                return await self._full_sync(schema, table, table_info)
         
         # Query for changed rows
         if last_sync:
+            # Ensure last_sync is timezone-aware for proper comparison
+            if last_sync.tzinfo is None:
+                last_sync = last_sync.replace(tzinfo=timezone.utc)
+
             query = f"""
                 SELECT * FROM {quote_ident(schema)}.{quote_ident(table)}
-                WHERE {quote_ident(update_column)} > $1
+                WHERE {quote_ident(update_column)} > $1::timestamptz
                 ORDER BY {quote_ident(update_column)}
             """
             rows = await db_pool.fetch(query, last_sync)
@@ -387,7 +403,7 @@ class SyncService:
         # Update sync status
         await self._update_sync_status_correct(schema, table, "completed", total_rows)
         
-        duration = (datetime.now() - start_time).total_seconds()
+        duration = (datetime.now(timezone.utc) - start_time).total_seconds()
         
         return {
             "mode": "incremental",
@@ -547,26 +563,50 @@ class SyncService:
     
     def _sanitize_metadata(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Sanitize data for JSON storage
+        Sanitize data for JSON storage with proper validation
         """
         sanitized = {}
-        
+
         for key, value in data.items():
-            if value is None:
-                sanitized[key] = None
-            elif isinstance(value, (str, int, float, bool)):
-                sanitized[key] = value
-            elif isinstance(value, (datetime, date)):
-                sanitized[key] = value.isoformat()
-            elif isinstance(value, Decimal):
-                sanitized[key] = float(value)
-            elif isinstance(value, bytes):
-                sanitized[key] = f"<binary:{len(value)}>"
-            elif isinstance(value, (list, dict)):
-                sanitized[key] = json.dumps(value)
-            else:
-                sanitized[key] = str(value)
-        
+            try:
+                if value is None:
+                    sanitized[key] = None
+                elif isinstance(value, (str, int, float, bool)):
+                    # Validate string length to prevent truncation issues
+                    if isinstance(value, str) and len(value) > 1000:
+                        sanitized[key] = value[:1000] + "..."
+                        logger.warning(f"Truncated long string field '{key}' to 1000 characters")
+                    else:
+                        sanitized[key] = value
+                elif isinstance(value, (datetime, date)):
+                    sanitized[key] = value.isoformat()
+                elif isinstance(value, Decimal):
+                    sanitized[key] = float(value)
+                elif isinstance(value, bytes):
+                    sanitized[key] = f"<binary:{len(value)}>"
+                elif isinstance(value, (list, dict)):
+                    # Ensure JSON serialization doesn't fail
+                    try:
+                        json_str = json.dumps(value, default=str)
+                        if len(json_str) > 2000:
+                            sanitized[key] = json_str[:2000] + "..."
+                            logger.warning(f"Truncated long JSON field '{key}' to 2000 characters")
+                        else:
+                            sanitized[key] = json_str
+                    except (TypeError, ValueError) as e:
+                        logger.warning(f"Failed to serialize field '{key}': {e}, converting to string")
+                        sanitized[key] = str(value)[:1000]
+                else:
+                    str_value = str(value)
+                    if len(str_value) > 1000:
+                        sanitized[key] = str_value[:1000] + "..."
+                        logger.warning(f"Truncated long field '{key}' to 1000 characters")
+                    else:
+                        sanitized[key] = str_value
+            except Exception as e:
+                logger.error(f"Error sanitizing field '{key}' with value '{value}': {e}")
+                sanitized[key] = f"<error:{str(e)}>"
+
         return sanitized
     
     async def _store_embeddings(
@@ -598,17 +638,40 @@ class SyncService:
                 updated_at = NOW()
         """
         
-        # Batch insert with formatted vectors
+        # Batch insert with formatted vectors and proper metadata handling
         batch_data = []
         for i in range(len(ids)):
-            batch_data.append((
-                ids[i],
-                schema,
-                table,
-                texts[i],
-                format_vector(embeddings[i]),
-                json.dumps(metadata_list[i])
-            ))
+            try:
+                # Ensure metadata is properly serialized
+                metadata = metadata_list[i]
+                if not isinstance(metadata, dict):
+                    logger.warning(f"Metadata for ID {ids[i]} is not a dict: {type(metadata)}")
+                    metadata = {}
+
+                # Serialize metadata with error handling
+                try:
+                    metadata_json = json.dumps(metadata, default=str, ensure_ascii=False)
+                except (TypeError, ValueError) as e:
+                    logger.error(f"Failed to serialize metadata for ID {ids[i]}: {e}")
+                    # Create a safe fallback metadata
+                    metadata_json = json.dumps({
+                        "_error": f"Failed to serialize original metadata: {str(e)}",
+                        "_original_type": str(type(metadata)),
+                        "id": ids[i] if len(ids) > i else "unknown"
+                    })
+
+                batch_data.append((
+                    ids[i],
+                    schema,
+                    table,
+                    texts[i],
+                    format_vector(embeddings[i]),
+                    metadata_json
+                ))
+            except Exception as e:
+                logger.error(f"Failed to prepare batch data for ID {ids[i] if len(ids) > i else 'unknown'}: {e}")
+                # Skip this record to prevent the entire batch from failing
+                continue
         
         await db_pool.execute_many(insert_query, batch_data)
         logger.debug(f"Stored {len(batch_data)} embeddings for {schema}.{table}")
@@ -678,7 +741,7 @@ class SyncService:
         table: str
     ) -> Optional[datetime]:
         """
-        Get last successful sync timestamp
+        Get last successful sync timestamp with timezone handling
         """
         query = """
             SELECT last_sync_completed
@@ -686,6 +749,16 @@ class SyncService:
             WHERE schema_name = $1 AND table_name = $2
         """
         result = await db_pool.fetchval(query, schema, table)
+
+        # Ensure timezone consistency
+        if result:
+            if result.tzinfo is None:
+                # Make timezone-naive datetime timezone-aware (assume UTC)
+                result = result.replace(tzinfo=timezone.utc)
+            elif result.tzinfo != timezone.utc:
+                # Convert to UTC if it's in a different timezone
+                result = result.astimezone(timezone.utc)
+
         return result
     
     def _get_primary_key(self, table_info: List[Dict[str, Any]]) -> Optional[str]:
@@ -814,7 +887,7 @@ class SyncService:
                     "tables_completed": 0,
                     "total_tables": 0
                 },
-                "started_at": datetime.now().isoformat(),  # Convert ke string!
+                "started_at": datetime.now(timezone.utc).isoformat(),  # Convert ke string!
                 "errors": []
             }
             
@@ -855,7 +928,7 @@ class SyncService:
             if job_id in self.sync_jobs:
                 self.sync_jobs[job_id]["status"] = "failed"
                 self.sync_jobs[job_id]["errors"].append(str(e))
-                self.sync_jobs[job_id]["completed_at"] = datetime.now().isoformat()
+                self.sync_jobs[job_id]["completed_at"] = datetime.now(timezone.utc).isoformat()
     
     async def enable_realtime_sync(
         self,
@@ -1068,6 +1141,162 @@ class SyncService:
             logger.error(f"Failed to fetch batch from {schema}.{table}: {e}")
             return []
 
+    async def process_realtime_change(
+        self,
+        schema: str,
+        table: str,
+        change_data: Dict[str, Any]
+    ) -> None:
+        """
+        Process real-time data change (adaptive untuk semua tabel)
+        """
+        try:
+            operation = change_data.get('operation')
+
+            if operation == 'DELETE':
+                # Handle DELETE: remove embedding
+                old_data = change_data.get('old_data', {})
+                row_id = self._extract_row_id(old_data)
+                if row_id:
+                    await self._delete_embedding(schema, table, row_id)
+                    logger.info(f"Deleted embedding for {schema}.{table}.{row_id}")
+
+            elif operation in ['INSERT', 'UPDATE']:
+                # Handle INSERT/UPDATE: update embedding
+                new_data = change_data.get('new_data', {})
+                if new_data:
+                    await self._sync_single_row_data(schema, table, new_data)
+                    logger.info(f"Updated embedding for {schema}.{table}")
+
+        except Exception as e:
+            logger.error(f"Failed to process real-time change for {schema}.{table}: {e}")
+
+    async def _sync_single_row_data(
+        self,
+        schema: str,
+        table: str,
+        row_data: Dict[str, Any]
+    ) -> None:
+        """
+        Sync single row data (digunakan untuk real-time updates)
+        """
+        try:
+            # Get patterns
+            patterns = await self._get_table_patterns(schema, table)
+
+            # Generate searchable text
+            text = self._generate_searchable_text(row_data, table, patterns)
+            if not text or len(text.strip()) < 10:
+                logger.warning(f"Insufficient text content for row, skipping sync")
+                return
+
+            # Prepare metadata
+            metadata = self._sanitize_metadata(row_data)
+            metadata['_schema'] = schema
+            metadata['_table'] = table
+
+            # Generate row ID
+            row_id = self._extract_row_id(row_data)
+            if not row_id:
+                logger.warning(f"No row ID found, generating hash-based ID")
+                row_id = hashlib.md5(f"{schema}_{table}_{text}".encode()).hexdigest()
+
+            # Use embedding queue for single item
+            from app.services.embedding_queue import embedding_queue
+
+            batch_id = await embedding_queue.add_batch([text], [metadata])
+            success = await embedding_queue.wait_for_batch(batch_id, timeout=120)
+
+            if success:
+                # Get embedding from cache
+                text_hash = hashlib.md5(text.encode()).hexdigest()
+                embedding = embedding_queue.cache.get(text_hash)
+
+                if embedding and len(embedding) > 0:
+                    # Validate embedding
+                    non_zero_count = sum(1 for v in embedding if v != 0)
+                    if non_zero_count > len(embedding) * 0.1:
+                        # Store valid embedding
+                        await self._store_embeddings(
+                            schema, table, [row_id], [text], [embedding], [metadata]
+                        )
+                        logger.info(f"Real-time sync completed for row {row_id}")
+                    else:
+                        logger.warning(f"Invalid embedding (mostly zeros) for row {row_id}")
+                else:
+                    logger.error(f"No valid embedding generated for row {row_id}")
+            else:
+                logger.error(f"Embedding generation failed for real-time sync")
+
+        except Exception as e:
+            logger.error(f"Failed to sync single row: {e}")
+
+    async def _delete_embedding(
+        self,
+        schema: str,
+        table: str,
+        row_id: str
+    ) -> None:
+        """
+        Delete embedding for a specific row
+        """
+        try:
+            embedding_id = f"{schema}_{table}_{row_id}"
+            query = """
+                DELETE FROM atabot.embeddings
+                WHERE id = $1
+            """
+            await db_pool.execute(query, embedding_id)
+            logger.debug(f"Deleted embedding {embedding_id}")
+        except Exception as e:
+            logger.error(f"Failed to delete embedding for {row_id}: {e}")
+
+    async def _ensure_timestamp_column(
+        self,
+        schema: str,
+        table: str
+    ) -> None:
+        """
+        Add updated_at column and trigger to table if not exists (adaptive)
+        """
+        try:
+            # Add updated_at column
+            alter_query = f"""
+                ALTER TABLE {quote_ident(schema)}.{quote_ident(table)}
+                ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()
+            """
+            await db_pool.execute(alter_query)
+
+            # Create or replace update trigger function
+            function_query = f"""
+                CREATE OR REPLACE FUNCTION {quote_ident(schema)}.update_{table}_updated_at()
+                RETURNS TRIGGER AS $$
+                BEGIN
+                    NEW.updated_at = NOW();
+                    RETURN NEW;
+                END;
+                $$ language 'plpgsql'
+            """
+            await db_pool.execute(function_query)
+
+            # Create trigger
+            trigger_name = f"update_{table}_updated_at"
+            trigger_query = f"""
+                DROP TRIGGER IF EXISTS {quote_ident(trigger_name)}
+                ON {quote_ident(schema)}.{quote_ident(table)};
+
+                CREATE TRIGGER {quote_ident(trigger_name)}
+                    BEFORE UPDATE ON {quote_ident(schema)}.{quote_ident(table)}
+                    FOR EACH ROW EXECUTE FUNCTION {quote_ident(schema)}.update_{table}_updated_at()
+            """
+            await db_pool.execute(trigger_query)
+
+            logger.info(f"Added updated_at column and trigger to {schema}.{table}")
+
+        except Exception as e:
+            logger.error(f"Failed to ensure timestamp column for {schema}.{table}: {e}")
+            raise
+
     async def _process_batch_with_validation(
         self,
         schema: str,
@@ -1104,7 +1333,7 @@ class SyncService:
                 "table": table,
                 "row_id": str(row_id),
                 "columns": list(row.keys()),
-                "synced_at": datetime.now().isoformat()
+                "synced_at": datetime.now(timezone.utc).isoformat()
             }
             
             ids.append(row_id)

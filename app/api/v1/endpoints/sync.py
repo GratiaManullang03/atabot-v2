@@ -3,7 +3,7 @@ Data Synchronization API Endpoints
 """
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from loguru import logger
 import uuid
 
@@ -334,7 +334,7 @@ async def get_sync_statistics():
         return {
             "sync_stats": dict(stats) if stats else {},
             "embedding_stats": dict(embedding_stats) if embedding_stats else {},
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
     except Exception as e:

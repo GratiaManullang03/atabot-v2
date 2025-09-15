@@ -134,10 +134,30 @@ class AppInitializer:
         try:
             async def handle_data_change(connection, pid, channel, payload):
                 """Handle data change notifications"""
-                logger.debug(f"Data change notification: {payload}")
-                # TODO: Process the change
-                from app.services.sync_service import sync_service
-                # Process in background
+                try:
+                    import json
+                    import asyncio
+
+                    logger.debug(f"Data change notification: {payload}")
+                    data = json.loads(payload)
+
+                    schema = data.get('schema')
+                    table = data.get('table')
+                    operation = data.get('operation')
+
+                    if operation in ['INSERT', 'UPDATE', 'DELETE']:
+                        logger.info(f"Processing real-time change: {operation} on {schema}.{table}")
+
+                        # Import sync service
+                        from app.services.sync_service import sync_service
+
+                        # Process change in background - sync hanya row yang berubah
+                        asyncio.create_task(
+                            sync_service.process_realtime_change(schema, table, data)
+                        )
+
+                except Exception as e:
+                    logger.error(f"Failed to handle data change: {e}")
             
             await db_pool.listen_to_channel('atabot_data_change', handle_data_change)
             logger.info("Real-time sync listener started")

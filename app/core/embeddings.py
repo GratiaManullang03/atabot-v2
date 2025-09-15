@@ -58,10 +58,10 @@ class EmbeddingService:
         self.client = voyageai.Client(api_key=settings.VOYAGE_API_KEY)
         self.model = settings.VOYAGE_MODEL
         self.dimensions = settings.EMBEDDING_DIMENSIONS
-        self.batch_size = min(settings.EMBEDDING_BATCH_SIZE, 8)  # Reduce batch size for testing
+        self.batch_size = settings.EMBEDDING_BATCH_SIZE  # Use full configured batch size
                 
-        # Rate limiter: Conservative for free tier
-        self.rate_limiter = RateLimiter(max_requests=2, window_seconds=60)
+        # Rate limiter: Match VoyageAI limits (3 RPM)
+        self.rate_limiter = RateLimiter(max_requests=3, window_seconds=60)
         
         # Simple in-memory cache for embeddings
         self._cache: Dict[str, List[float]] = {}
@@ -165,8 +165,8 @@ class EmbeddingService:
                     logger.critical("VoyageAI requires payment method for higher rate limits!")
                     logger.info("Please add payment method at: https://dashboard.voyageai.com/")
                 
-                # Wait longer before retry
-                await asyncio.sleep(30)
+                # Wait longer before retry for free tier
+                await asyncio.sleep(60)
                 raise  # Let retry decorator handle it
             
             elif "api key" in error_msg or "unauthorized" in error_msg:
@@ -207,8 +207,8 @@ class EmbeddingService:
         # Initialize results with None
         all_embeddings = [None] * len(texts)
         
-        # Process in small batches due to rate limiting
-        batch_size = min(self.batch_size, 8)  # Even smaller batches for free tier
+        # Process in optimized batches
+        batch_size = self.batch_size  # Use full configured batch size
         total_batches = (len(valid_indices_texts) + batch_size - 1) // batch_size
         
         logger.info(f"Processing {len(valid_indices_texts)} texts in {total_batches} batches (batch size: {batch_size})")
@@ -285,9 +285,9 @@ class EmbeddingService:
                 percent = (progress / len(valid_indices_texts)) * 100
                 logger.info(f"Progress: {progress}/{len(valid_indices_texts)} ({percent:.1f}%) - Success: {successful}, Failed: {failed}, Cached: {cached_count}")
             
-            # Wait between batches to respect rate limit
+            # Wait between batches to respect rate limit (only if multiple batches)
             if batch_num < total_batches - 1:
-                wait_time = 21  # 60 seconds / 3 RPM = 20 seconds, +1 for safety
+                wait_time = 20  # 60 seconds / 3 RPM = 20 seconds
                 logger.info(f"Waiting {wait_time} seconds before next batch (rate limit)...")
                 await asyncio.sleep(wait_time)
         

@@ -118,18 +118,19 @@ class EmbeddingQueue:
         
         try:
             while self.queue:
-                # Collect up to 120 texts (max per VoyageAI request)
+                # Collect up texts (max per VoyageAI request)
                 batch_texts = []
                 batch_metadata = []
                 batch_ids = []
                 batch_hashes = []
                 
                 # Collect texts from multiple batches if needed
-                while self.queue and len(batch_texts) < 120:
+                max_batch_size = 100  # Free tier limit without payment method
+                while self.queue and len(batch_texts) < max_batch_size:
                     batch = self.queue[0]
                     
                     # Calculate how many texts we can take from this batch
-                    can_take = min(120 - len(batch_texts), len(batch['texts']))
+                    can_take = min(max_batch_size - len(batch_texts), len(batch['texts']))
                     
                     if can_take == len(batch['texts']):
                         # Take entire batch
@@ -207,11 +208,12 @@ class EmbeddingQueue:
                             # For other errors, wait shorter
                             await asyncio.sleep(5)
                     
-                    # Always wait between batches for rate limiting (free tier: 3 RPM)
-                    # Wait 21 seconds to ensure we don't exceed 3 requests per minute
-                    if self.queue:  # Only wait if there are more items to process
-                        logger.info("Waiting 21 seconds for rate limit...")
-                        await asyncio.sleep(21)
+                    # Wait between batches for rate limiting (3 RPM)
+                    # Only wait if there are more items to process
+                    if self.queue:
+                        wait_time = 20  # 60 seconds / 3 RPM = 20 seconds
+                        logger.info(f"Waiting {wait_time} seconds for rate limit...")
+                        await asyncio.sleep(wait_time)
                     
         finally:
             self.processing = False

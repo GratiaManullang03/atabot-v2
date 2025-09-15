@@ -235,23 +235,46 @@ class SQLGenerator:
         """
         # Use LLM with schema context
         tables_context = self._format_schema_context(schema_info, limit=5)
-        
+
+        # DEBUG: Log the schema context being sent to LLM
+        logger.info(f"=== SCHEMA CONTEXT FOR LLM ===")
+        logger.info(f"Schema: {schema}")
+        logger.info(f"Tables context: {tables_context}")
+        logger.info(f"Schema info keys: {list(schema_info.keys())}")
+
         prompt = f"""Generate PostgreSQL query for this aggregation request.
 
             Schema: {schema}
             Query: "{query}"
 
-            Available tables and columns:
-            {tables_context}
+            IMPORTANT - Use these EXACT table and column names:
+            Table: {schema}.item_metadata
+            Columns:
+            - im_id (integer) - Item ID
+            - im_desc (text) - Item description/name
+            - im_program (text) - Program name
+            - im_warehouse (text) - Warehouse location
+            - im_stock (numeric) - Stock quantity
+            - updated_at (timestamp) - Last update time
+
+            For queries about:
+            - "stok" or "stock" → use im_stock column
+            - "barang" or "item" or product name → use im_desc column (with ILIKE for partial matches)
+            - "program" → use im_program column
 
             Requirements:
             - Use appropriate aggregation functions: {', '.join(intent['aggregations'])}
             {"- Group by: " + ', '.join(intent['grouping']) if intent['grouping'] else ""}
             {"- Order by: " + ', '.join(intent['ordering']) if intent['ordering'] else ""}
             {"- Limit: " + str(intent['limit']) if intent['limit'] else ""}
+            - Use ILIKE '%search_term%' for text searches
+            - Always qualify table name as {schema}.item_metadata
 
             Return ONLY the SQL query without explanation.
         """
+
+        logger.info(f"=== FULL PROMPT FOR LLM ===")
+        logger.info(prompt)
                     
         sql = await llm_client.generate(
             prompt=prompt,

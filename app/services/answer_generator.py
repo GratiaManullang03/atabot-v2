@@ -25,7 +25,8 @@ class AnswerGenerator:
         Initialize formatting rules for different data types
         """
         return {
-            'currency_indicators': ['price', 'cost', 'amount', 'revenue', 'salary', 'fee', 'total'],
+            'currency_indicators': ['price', 'cost', 'amount', 'revenue', 'salary', 'fee', 'harga', 'biaya'],
+            'stock_indicators': ['stok', 'stock', 'qty', 'quantity', 'jumlah', 'total_stok'],
             'percentage_indicators': ['rate', 'percent', 'ratio', 'margin'],
             'date_formats': {
                 'short': '%Y-%m-%d',
@@ -48,52 +49,73 @@ class AnswerGenerator:
     ) -> str:
         """
         Generate natural language answer from query results
-        
+
         Args:
             query: Original user query
             results: Query results (from SQL or vector search)
             context: Additional context (intent, schema info, etc.)
             language: Target language ('auto', 'en', 'id', etc.)
-            
+
         Returns:
             Natural language answer
         """
         try:
+            logger.info(f"=== MAIN GENERATE_ANSWER ENTRY POINT ===")
+            logger.info(f"Query: {query}")
+            logger.info(f"Results type: {type(results)}")
+            logger.info(f"Results length: {len(results) if isinstance(results, list) else 'N/A (dict)'}")
+            logger.info(f"Context: {context}")
+            logger.info(f"Language: {language}")
+
             # Detect language if auto
             if language == "auto":
                 language = self._detect_language(query)
-            
+                logger.info(f"Detected language: {language}")
+
             # Handle empty results
             if not results or (isinstance(results, list) and len(results) == 0):
+                logger.info("No results found, generating no-data response")
                 return self._generate_no_data_response(query, language)
-            
+
             # Determine result type and generate appropriate answer
             if isinstance(results, dict):
+                logger.info("Results is a dictionary")
                 if 'rows' in results:
+                    logger.info("Generating SQL answer from rows")
                     # SQL query results
                     answer = await self._generate_sql_answer(
                         query, results['rows'], context, language
                     )
                 elif 'error' in results:
+                    logger.info("Generating error response")
                     # Error result
                     answer = self._generate_error_response(
                         query, results['error'], language
                     )
                 else:
+                    logger.info("Generating single result answer")
                     # Single result
                     answer = await self._generate_single_answer(
                         query, results, context, language
                     )
             else:
+                logger.info("Results is a list, calling _generate_list_answer")
                 # List of results
                 answer = await self._generate_list_answer(
                     query, results, context, language
                 )
-            
+
+            logger.info(f"=== FINAL ANSWER GENERATED ===")
+            logger.info(f"Answer length: {len(answer)} characters")
+            logger.debug(f"Answer preview: {answer[:200]}...")
             return answer
-            
+
         except Exception as e:
-            logger.error(f"Answer generation failed: {e}")
+            logger.error(f"=== MAIN GENERATE_ANSWER EXCEPTION ===")
+            logger.error(f"Exception type: {type(e).__name__}")
+            logger.error(f"Exception message: {str(e)}")
+            logger.error(f"Exception details: {repr(e)}")
+            logger.error("Generating fallback response")
             return self._generate_fallback_response(query, language)
     
     async def _generate_sql_answer(
@@ -250,15 +272,32 @@ class AnswerGenerator:
         if not results:
             return self._generate_no_data_response(query, language)
 
-        # Add logging to track LLM calls
-        logger.info(f"Generating intelligent answer for {len(results)} search results using LLM")
+        # Add detailed logging to track LLM calls
+        logger.info(f"=== ANSWER GENERATION START ===")
+        logger.info(f"Query: {query}")
+        logger.info(f"Number of results: {len(results)}")
+        logger.info(f"Language: {language}")
+        logger.info(f"Context: {context}")
 
         # Format results data for LLM processing
         formatted_results = []
         for i, result in enumerate(results[:10], 1):  # Limit to top 10 for LLM processing
             # Extract key information from each result
+            # Ensure result is a dictionary
+            if not isinstance(result, dict):
+                logger.warning(f"Result {i} is not a dictionary, type: {type(result)}, value: {result}")
+                # Convert string or other types to a basic dict structure
+                result = {'content': str(result), 'metadata': {}}
+
             content = result.get('content', '')
             metadata = result.get('metadata', {})
+
+            # Ensure metadata is a dictionary
+            if not isinstance(metadata, dict):
+                logger.warning(f"Metadata for result {i} is not a dictionary, type: {type(metadata)}, converting to dict")
+                metadata = {}
+
+            logger.debug(f"Processing result {i}: content_length={len(content)}, metadata_keys={list(metadata.keys())}")
 
             # Format key fields from metadata
             key_info = []
@@ -273,6 +312,8 @@ class AnswerGenerator:
                 'content': content[:200] + '...' if len(content) > 200 else content,
                 'key_fields': key_info[:5]  # Top 5 most relevant fields
             })
+
+        logger.info(f"Formatted {len(formatted_results)} results for LLM processing")
 
         # Prepare LLM prompt for intelligent answer generation
         prompt = f"""You are a helpful business intelligence assistant. A user asked: "{query}"
@@ -302,19 +343,29 @@ Instructions:
 Please provide a comprehensive answer that directly addresses the user's question."""
 
         try:
-            logger.info("Calling LLM to generate intelligent answer...")
+            logger.info("=== CALLING LLM TO GENERATE INTELLIGENT ANSWER ===")
+            logger.info(f"Prompt length: {len(prompt)} characters")
+            logger.debug(f"Full prompt: {prompt[:500]}...")
+
             answer = await llm_client.generate(
                 prompt=prompt,
                 temperature=0.2,  # Lower temperature for more focused answers
                 max_tokens=800    # Allow longer responses for comprehensive answers
             )
-            logger.info("LLM answer generated successfully")
+
+            logger.info(f"=== LLM ANSWER GENERATED SUCCESSFULLY ===")
+            logger.info(f"Answer length: {len(answer)} characters")
+            logger.debug(f"Answer preview: {answer[:200]}...")
             return answer
 
         except Exception as e:
-            logger.error(f"LLM generation failed: {e}")
+            logger.error(f"=== LLM GENERATION FAILED ===")
+            logger.error(f"Exception type: {type(e).__name__}")
+            logger.error(f"Exception message: {str(e)}")
+            logger.error(f"Exception details: {repr(e)}")
+
             # Fallback to formatted answer if LLM fails
-            logger.info("Falling back to formatted answer due to LLM failure")
+            logger.info("=== FALLING BACK TO FORMATTED ANSWER ===")
             formatted_data = self._format_data_for_display(results)
 
             if language == "id":
@@ -322,7 +373,9 @@ Please provide a comprehensive answer that directly addresses the user's questio
             else:
                 intro = f"Found {len(results)} results for '{query}':\n\n"
 
-            return intro + formatted_data
+            fallback_answer = intro + formatted_data
+            logger.info(f"Fallback answer generated: {len(fallback_answer)} characters")
+            return fallback_answer
     
     async def _generate_table_answer(
         self,
@@ -400,14 +453,18 @@ Please provide a comprehensive answer that directly addresses the user's questio
             return value.strftime(self.formatting_rules['date_formats']['long'])
         
         elif isinstance(value, (int, float, Decimal)):
+            # Check if it's stock/quantity first
+            if any(indicator in field_lower for indicator in self.formatting_rules['stock_indicators']):
+                return f"{int(value):,} unit"
+
             # Check if it's currency
-            if any(indicator in field_lower for indicator in self.formatting_rules['currency_indicators']):
+            elif any(indicator in field_lower for indicator in self.formatting_rules['currency_indicators']):
                 return f"${float(value):,.2f}"
-            
+
             # Check if it's percentage
             elif any(indicator in field_lower for indicator in self.formatting_rules['percentage_indicators']):
                 return f"{float(value):.1f}%"
-            
+
             # Regular number
             elif isinstance(value, int) or float(value).is_integer():
                 return f"{int(value):,}"
