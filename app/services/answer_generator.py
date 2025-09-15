@@ -315,6 +315,11 @@ class AnswerGenerator:
 
         logger.info(f"Formatted {len(formatted_results)} results for LLM processing")
 
+        # Enhanced product matching analysis
+        product_matches = self._analyze_product_matches(query, formatted_results)
+        if product_matches:
+            logger.info(f"Found enhanced product matches: {product_matches}")
+
         # Prepare LLM prompt for intelligent answer generation
         prompt = f"""You are a helpful business intelligence assistant. A user asked: "{query}"
 
@@ -326,6 +331,12 @@ Search Results:
         # Add formatted results to prompt
         for result in formatted_results:
             prompt += f"\n{result['rank']}. {', '.join(result['key_fields'])}"
+
+        # Add product matching information if found
+        if product_matches:
+            prompt += f"\n\nPRODUCT MATCHING ANALYSIS:"
+            for queried_product, similar_products in product_matches.items():
+                prompt += f"\n- For '{queried_product}': Found similar products: {', '.join(similar_products)}"
 
         prompt += f"""
 
@@ -339,6 +350,12 @@ Instructions:
 - {"Jawab dalam bahasa Indonesia" if language == "id" else "Answer in English"}
 - Format numbers with proper separators (use commas for thousands)
 - If the question asks about stock levels, highlight which items are available vs. out of stock
+- IMPORTANT: Look for similar or related product names, not just exact matches. For example:
+  - "ADVANCE WAFFLE MAKER" could be related to "AIR FRYER ADVANCE" or other ADVANCE products
+  - "ACTIVITY BOOK" could match "BUSY BOOK" or similar educational products
+  - Consider partial matches, synonyms, and product variations
+- If you find similar products but not exact matches, mention them as "similar products" or "related items"
+- Always check all search results thoroughly for any relevant information
 
 Please provide a comprehensive answer that directly addresses the user's question."""
 
@@ -591,6 +608,53 @@ Please provide a comprehensive answer that directly addresses the user's questio
         en_score = sum(1 for word in en_words if word in text_lower)
         
         return "id" if id_score > en_score else "en"
+
+    def _analyze_product_matches(self, query: str, formatted_results: List[Dict]) -> Dict[str, List[str]]:
+        """
+        Analyze query for product names and find similar matches in results
+        """
+        import re
+
+        # Extract potential product names from query
+        query_lower = query.lower()
+
+        # Common product keywords to look for
+        product_keywords = ['stok', 'stock', 'berapa', 'ada di program']
+
+        # Extract product names (words in caps or quoted)
+        potential_products = []
+
+        # Look for words in ALL CAPS (likely product names)
+        caps_words = re.findall(r'\b[A-Z]{2,}(?:\s+[A-Z]{2,})*\b', query)
+        potential_products.extend(caps_words)
+
+        # Look for quoted strings
+        quoted = re.findall(r'"([^"]+)"', query)
+        potential_products.extend(quoted)
+
+        matches = {}
+
+        for product in potential_products:
+            product_lower = product.lower()
+            similar_products = []
+
+            # Check each result for similar products
+            for result in formatted_results:
+                for field in result['key_fields']:
+                    field_lower = field.lower()
+
+                    # Exact substring match
+                    if product_lower in field_lower or any(word in field_lower for word in product_lower.split()):
+                        similar_products.append(field)
+
+                    # Reverse check - any word from result in product name
+                    elif any(word in product_lower for word in field_lower.split() if len(word) > 3):
+                        similar_products.append(field)
+
+            if similar_products:
+                matches[product] = list(set(similar_products))  # Remove duplicates
+
+        return matches
     
     def _generate_no_data_response(self, query: str, language: str) -> str:
         """
