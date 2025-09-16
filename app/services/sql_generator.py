@@ -15,7 +15,7 @@ class SQLGenerator:
     """
     
     def __init__(self):
-        self.query_cache = {}
+        # Query cache removed - using real-time generation only
         self.learned_patterns = {}
         
     async def generate_sql(

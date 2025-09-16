@@ -15,6 +15,8 @@ from app.services.query_decomposer import query_decomposer
 from app.services.search_service import search_service
 from app.services.sql_generator import sql_generator
 from app.services.answer_generator import answer_generator
+from app.services.security_guard import security_guard
+from app.services.join_analyzer import join_analyzer
 from app.schemas.chat_models import ChatRequest, ChatResponse
 from app.core.database import db_pool
 from app.services.smart_router import smart_router
@@ -35,6 +37,29 @@ class ChatOrchestrator:
         session_id = request.session_id or str(uuid.uuid4())
         
         try:
+            # SECURITY VALIDATION FIRST
+            is_valid, violation_reason = security_guard.validate_query(request.query)
+            if not is_valid:
+                logger.warning(f"Query rejected by security guard: {violation_reason}")
+                return {
+                    "success": False,
+                    "session_id": session_id,
+                    "query": request.query,
+                    "answer": security_guard.generate_safe_response_template(request.query),
+                    "sources": [],
+                    "processing_time": (datetime.now() - start_time).total_seconds(),
+                    "metadata": {
+                        "security_violation": violation_reason,
+                        "rejected": True
+                    }
+                }
+
+            # Sanitize query
+            sanitized_query = security_guard.sanitize_query(request.query)
+            if sanitized_query != request.query:
+                logger.info(f"Query sanitized: '{request.query}' -> '{sanitized_query}'")
+                request.query = sanitized_query
+
             # Get or create MCP context
             context = mcp_orchestrator.get_context(session_id)
             if not context:
@@ -68,8 +93,20 @@ class ChatOrchestrator:
             all_sources = []
             
             for sub_query in sub_queries:
-                # Determine processing strategy
-                if intent['type'] in ['aggregation', 'comparison', 'join']:
+                # Check for multi-table join opportunities first
+                join_opportunity = await join_analyzer.detect_join_opportunity(
+                    sub_query,
+                    context.active_schema
+                )
+
+                if join_opportunity:
+                    # Use join-based processing
+                    result = await self._process_join_query(
+                        sub_query,
+                        context.active_schema,
+                        join_opportunity
+                    )
+                elif intent['type'] in ['aggregation', 'comparison', 'join']:
                     # Use SQL generation
                     result = await self._process_sql_query(
                         sub_query,
@@ -97,7 +134,12 @@ class ChatOrchestrator:
                 )
             else:
                 final_answer = all_results[0]['answer']
-            
+
+            # VALIDATE RESPONSE CONTENT
+            if not security_guard.validate_response_content(final_answer):
+                logger.error("Response failed security validation, using safe fallback")
+                final_answer = "Maaf, tidak dapat memproses permintaan Anda saat ini. Silakan coba dengan pertanyaan yang lebih spesifik tentang data inventory atau bisnis."
+
             # Track in context
             context.add_message("user", request.query)
             context.add_message("assistant", final_answer, {
@@ -129,6 +171,70 @@ class ChatOrchestrator:
         except Exception as e:
             logger.error(f"Chat processing error: {e}")
             raise
+
+    async def _process_join_query(
+        self,
+        query: str,
+        schema: str,
+        join_opportunity: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Process query that requires joining multiple tables"""
+
+        try:
+            logger.info(f"Processing join query: {query}")
+            logger.info(f"Join strategy: {join_opportunity}")
+
+            # Execute join query
+            results = await join_analyzer.execute_join_query(
+                join_opportunity,
+                schema,
+                where_conditions=[],
+                limit=50
+            )
+
+            if not results:
+                return {
+                    'answer': f"Tidak ditemukan data yang sesuai dengan query join: {query}",
+                    'sources': []
+                }
+
+            # Convert to sources format
+            sources = []
+            for i, result in enumerate(results[:10]):  # Limit to top 10
+                source = {
+                    'id': f"join_result_{i}",
+                    'schema_name': schema,
+                    'table_name': 'multiple_tables',
+                    'content': f"Join result from tables: {', '.join(join_opportunity['tables'])}",
+                    'metadata': result,
+                    'score': 0.9,
+                    'source': {
+                        'schema': schema,
+                        'table': 'join',
+                        'id': f"join_{i}"
+                    }
+                }
+                sources.append(source)
+
+            # Generate answer using the join results
+            answer = await answer_generator.generate_answer(
+                query,
+                sources,
+                context={'intent': 'join'},
+                language="auto"
+            )
+
+            return {
+                'answer': answer,
+                'sources': sources
+            }
+
+        except Exception as e:
+            logger.error(f"Join query processing failed: {e}")
+            return {
+                'answer': f"Gagal memproses query join: {str(e)}",
+                'sources': []
+            }
     
     async def _process_sql_query(
         self,

@@ -16,143 +16,97 @@ from app.schemas.sync_models import (
 )
 router = APIRouter()
 
-@router.post("/table", response_model=SyncResponse)
-async def sync_single_table(
+@router.post("/", response_model=SyncResponse)
+async def sync_data(
     request: SyncRequest,
     background_tasks: BackgroundTasks
 ):
     """
-    Synchronize a single table to vector store
+    Unified sync endpoint - handles single table, multiple tables, or full schema
+    Supports both single table and batch operations in one endpoint
     """
     try:
-        # Generate job ID ONCE
+        # Generate job ID
         job_id = str(uuid.uuid4())
-        
-        # Start sync in background WITH the same job_id
-        background_tasks.add_task(
-            sync_service.sync_table_with_job_id,  # Use new method that accepts job_id
-            job_id=job_id,
-            schema=request.schema_name,
-            table=request.table_name,
-            mode="full" if request.force_full else "incremental"
-        )
-        
-        return SyncResponse(
-            success=True,
-            message=f"Sync started for {request.schema_name}.{request.table_name}",
-            job_id=job_id,
-            status="started"
-        )
-        
+
+        # Determine sync mode
+        mode = "full" if request.force_full else "incremental"
+
+        # Handle different sync types
+        if hasattr(request, 'tables') and request.tables:
+            # Multiple tables specified - batch sync
+            background_tasks.add_task(
+                sync_service.sync_schema_with_job_id,
+                job_id=job_id,
+                schema=request.schema_name,
+                tables=request.tables,
+                mode=mode
+            )
+
+            return SyncResponse(
+                success=True,
+                message=f"Batch sync started for {len(request.tables)} tables in {request.schema_name}",
+                job_id=job_id,
+                status="started"
+            )
+
+        elif hasattr(request, 'table_name') and request.table_name:
+            # Single table specified
+            background_tasks.add_task(
+                sync_service.sync_table_with_job_id,
+                job_id=job_id,
+                schema=request.schema_name,
+                table=request.table_name,
+                mode=mode
+            )
+
+            return SyncResponse(
+                success=True,
+                message=f"Sync started for {request.schema_name}.{request.table_name}",
+                job_id=job_id,
+                status="started"
+            )
+
+        else:
+            # Full schema sync
+            background_tasks.add_task(
+                sync_service.sync_schema_with_job_id,
+                job_id=job_id,
+                schema=request.schema_name,
+                mode=mode
+            )
+
+            return SyncResponse(
+                success=True,
+                message=f"Full schema sync started for {request.schema_name}",
+                job_id=job_id,
+                status="started"
+            )
+
     except Exception as e:
         logger.error(f"Failed to start sync: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/batch", response_model=SyncResponse)
-async def sync_batch_tables(
-    request: BatchSyncRequest,
+# Legacy batch and initial sync endpoints removed
+# Use unified POST /api/v1/sync/ endpoint instead
+# - For single table: include table_name in request
+# - For multiple tables: include tables array in request
+# - For full schema: omit both table_name and tables
+# - For force full sync: set force_full=true
+
+@router.post("/table", response_model=SyncResponse)
+async def sync_single_table_legacy(
+    request: SyncRequest,
     background_tasks: BackgroundTasks
 ):
     """
-    Synchronize multiple tables in batch
+    Legacy endpoint for backward compatibility
+    Redirects to unified sync endpoint
     """
-    try:
-        job_id = str(uuid.uuid4())
-        
-        # Start batch sync in background with job_id
-        background_tasks.add_task(
-            sync_service.sync_schema_with_job_id,
-            job_id=job_id,
-            schema=request.schema_name,
-            tables=request.tables,
-            mode="full" if request.force_full else "incremental"
-        )
-        
-        return SyncResponse(
-            success=True,
-            message=f"Batch sync started for {len(request.tables)} tables in {request.schema_name}",
-            job_id=job_id,
-            status="started"
-        )
-        
-    except Exception as e:
-        logger.error(f"Failed to start batch sync: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await sync_data(request, background_tasks)
 
-@router.post("/initial")
-async def initial_sync(
-    schema_name: str,
-    background_tasks: BackgroundTasks
-):
-    """
-    Perform initial full sync for a schema
-    """
-    try:
-        job_id = str(uuid.uuid4())
-        
-        # Start full schema sync with job_id
-        background_tasks.add_task(
-            sync_service.sync_schema_with_job_id,
-            job_id=job_id,
-            schema=schema_name,
-            mode="full"
-        )
-        
-        return {
-            "success": True,
-            "message": f"Initial sync started for schema {schema_name}",
-            "job_id": job_id,
-            "estimated_time": "Depends on data volume"
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to start initial sync: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/realtime/enable")
-async def enable_realtime_sync(
-    schema_name: str,
-    table_name: str
-):
-    """
-    Enable real-time synchronization for a table
-    """
-    try:
-        result = await sync_service.enable_realtime_sync(schema_name, table_name)
-        return result
-        
-    except Exception as e:
-        logger.error(f"Failed to enable realtime sync: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/realtime/disable")
-async def disable_realtime_sync(
-    schema_name: str,
-    table_name: str
-):
-    """
-    Disable real-time synchronization for a table
-    """
-    try:
-        # Update sync status
-        from app.core.database import db_pool
-        
-        query = """
-            UPDATE atabot.sync_status
-            SET realtime_enabled = false
-            WHERE schema_name = $1 AND table_name = $2
-        """
-        await db_pool.execute(query, schema_name, table_name)
-        
-        return {
-            "success": True,
-            "message": f"Real-time sync disabled for {schema_name}.{table_name}"
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to disable realtime sync: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+# Real-time sync APIs removed - feature not functional
+# Use manual sync via /table endpoint instead
 
 @router.get("/status")
 async def get_sync_status(

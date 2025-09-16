@@ -101,50 +101,8 @@ async def analyze_schema(schema_name: str) -> Dict[str, Any]:
         logger.error(f"Failed to analyze schema {schema_name}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/{schema_name}/activate")
-async def activate_schema(schema_name: str, session_id: Optional[str] = None):
-    """
-    Activate a schema for the current session
-    """
-    try:
-        # Verify schema exists
-        schemas = await db_pool.get_schemas()
-        if schema_name not in schemas:
-            raise HTTPException(status_code=404, detail=f"Schema {schema_name} not found")
-        
-        # Update managed schemas
-        query = """
-            INSERT INTO atabot.managed_schemas (schema_name, display_name, is_active)
-            VALUES ($1, $2, true)
-            ON CONFLICT (schema_name) 
-            DO UPDATE SET is_active = true
-        """
-        
-        await db_pool.execute(
-            query,
-            schema_name,
-            schema_name.replace("_", " ").title()
-        )
-        
-        # Set in MCP context if session provided
-        if session_id:
-            await mcp_orchestrator.process_request(
-                {
-                    "action": "set_schema",
-                    "schema": schema_name
-                },
-                session_id=session_id
-            )
-        
-        return {
-            "success": True,
-            "message": f"Schema {schema_name} activated",
-            "schema": schema_name
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to activate schema {schema_name}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+# Schema activation removed - use schema_name parameter in chat API instead
+# This provides better flexibility without global state management
 
 @router.get("/{schema_name}/tables")
 async def get_schema_tables(schema_name: str):
@@ -286,28 +244,7 @@ async def get_schema_statistics(schema_name: str):
         logger.error(f"Failed to get statistics for schema {schema_name}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     
-@router.delete("/{schema_name}")
-async def deactivate_schema(schema_name: str):
-    """
-    Deactivate a schema (does not delete data)
-    """
-    try:
-        query = """
-            UPDATE atabot.managed_schemas
-            SET is_active = false
-            WHERE schema_name = $1
-        """
-        
-        await db_pool.execute(query, schema_name)
-        
-        return {
-            "success": True,
-            "message": f"Schema {schema_name} deactivated"
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to deactivate schema {schema_name}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+# Schema deactivation removed - not needed with per-request schema specification
 
 @router.get("/{schema_name}/relationships")
 async def get_schema_relationships(schema_name: str):

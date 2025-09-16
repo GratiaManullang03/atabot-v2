@@ -8,7 +8,7 @@ from loguru import logger
 
 from app.core.database import db_pool
 from app.services.embedding_queue import embedding_queue
-from app.services.cache_persistence import cache_persistence
+# Cache persistence removed - using database storage only
 
 router = APIRouter()
 
@@ -30,13 +30,9 @@ async def get_embedding_stats() -> Dict:
             FROM atabot.embeddings
         """)
         
-        # Get cache persistence stats
-        cache_stats = await cache_persistence.get_cache_stats()
-        
         return {
             "queue": queue_stats,
             "database": dict(db_stats) if db_stats else {},
-            "cache_persistence": cache_stats,
             "timestamp": datetime.now().isoformat()
         }
         

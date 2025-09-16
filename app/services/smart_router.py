@@ -10,12 +10,17 @@ class SmartRouter:
     """
     
     def __init__(self):
-        # Pre-compiled patterns for common queries
+        # Enhanced patterns for common business queries
         self.patterns = {
+            'stock_query': re.compile(r'\b(stok|stock|berapa.*stok)\s+([A-Z\s]+)', re.I),
+            'program_query': re.compile(r'\b(program|ada di program)\s+(apa|mana)', re.I),
+            'product_search': re.compile(r'\b(cari|search|find)\s+([A-Z\s]+)', re.I),
             'count': re.compile(r'\b(count|jumlah|berapa banyak|how many)\b', re.I),
             'sum': re.compile(r'\b(total|sum|jumlah total)\b', re.I),
             'list': re.compile(r'\b(list|show|tampilkan|tunjukkan)\s+all\b', re.I),
             'simple_where': re.compile(r'\b(where|dengan|yang)\s+(\w+)\s*(=|is)\s*(["\']?)([^"\']+)\4', re.I),
+            'status_check': re.compile(r'\b(status|kondisi|keadaan)\s+(.+)', re.I),
+            'availability': re.compile(r'\b(tersedia|available|ada)\s+(.+)', re.I)
         }
         
         # Cache for SQL templates
@@ -23,18 +28,43 @@ class SmartRouter:
     
     def analyze_query(self, query: str) -> Dict[str, Any]:
         """
-        Analyze query without LLM
+        Enhanced query analysis without LLM
         """
         query_lower = query.lower()
-        
-        # Check for simple patterns first
+
+        # Business-specific patterns first
+        if self.patterns['stock_query'].search(query):
+            match = self.patterns['stock_query'].search(query)
+            if match:
+                product_name = match.group(2).strip()
+                return {
+                    'type': 'stock_query',
+                    'product': product_name,
+                    'needs_llm': False,
+                    'use_search': True,  # Use search service instead of direct SQL
+                    'search_terms': [product_name, 'stok', 'stock']
+                }
+
+        if self.patterns['product_search'].search(query):
+            match = self.patterns['product_search'].search(query)
+            if match:
+                product_name = match.group(2).strip()
+                return {
+                    'type': 'product_search',
+                    'product': product_name,
+                    'needs_llm': False,
+                    'use_search': True,
+                    'search_terms': [product_name]
+                }
+
+        # Generic patterns
         if self.patterns['count'].search(query):
             return {
                 'type': 'count',
                 'needs_llm': False,
                 'sql_template': 'SELECT COUNT(*) FROM {table} {where}'
             }
-        
+
         if self.patterns['sum'].search(query):
             # Extract field to sum
             field_match = re.search(r'(total|sum)\s+(\w+)', query_lower)
@@ -45,14 +75,14 @@ class SmartRouter:
                     'needs_llm': False,
                     'sql_template': f'SELECT SUM({field_match.group(2)}) FROM {{table}} {{where}}'
                 }
-        
+
         if self.patterns['list'].search(query):
             return {
                 'type': 'list',
                 'needs_llm': False,
                 'sql_template': 'SELECT * FROM {table} LIMIT 100'
             }
-        
+
         # Complex query - needs LLM
         return {
             'type': 'complex',

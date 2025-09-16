@@ -131,48 +131,12 @@ CREATE INDEX idx_learned_patterns_schema ON atabot.learned_patterns(schema_name)
 CREATE INDEX idx_learned_patterns_confidence ON atabot.learned_patterns(confidence DESC);
 
 -- =============================================================================
--- CACHE TABLE
--- Query result caching for performance
+-- UNUSED TABLES REMOVED
+-- Query cache and conversation contexts removed as they're handled by MCP
 -- =============================================================================
-CREATE TABLE IF NOT EXISTS atabot.query_cache (
-    cache_key TEXT PRIMARY KEY,
-    query_hash TEXT NOT NULL,
-    result JSONB NOT NULL,
-    hit_count INTEGER DEFAULT 0,
-    expires_at TIMESTAMP WITH TIME ZONE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    last_accessed TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE INDEX idx_cache_expires ON atabot.query_cache(expires_at);
-CREATE INDEX idx_cache_query_hash ON atabot.query_cache(query_hash);
-
--- Clean up expired cache entries periodically
-CREATE OR REPLACE FUNCTION atabot.cleanup_expired_cache() 
-RETURNS void AS $$
-BEGIN
-    DELETE FROM atabot.query_cache WHERE expires_at < NOW();
-END;
-$$ LANGUAGE plpgsql;
-
--- =============================================================================
--- CONVERSATION CONTEXTS TABLE
--- Stores conversation context for continuity
--- =============================================================================
-CREATE TABLE IF NOT EXISTS atabot.conversation_contexts (
-    session_id TEXT PRIMARY KEY,
-    user_id TEXT,
-    active_schema TEXT,
-    context_data JSONB DEFAULT '{}',
-    message_count INTEGER DEFAULT 0,
-    last_activity TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    expires_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() + INTERVAL '24 hours'
-);
-
-CREATE INDEX idx_contexts_user ON atabot.conversation_contexts(user_id);
-CREATE INDEX idx_contexts_expires ON atabot.conversation_contexts(expires_at);
-CREATE INDEX idx_contexts_activity ON atabot.conversation_contexts(last_activity DESC);
+-- Tables removed:
+-- - atabot.query_cache (unused - no query caching implemented)
+-- - atabot.conversation_contexts (replaced by MCP context system)
 
 -- =============================================================================
 -- FUNCTIONS FOR REAL-TIME SYNC
